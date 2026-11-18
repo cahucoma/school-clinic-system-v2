@@ -27,14 +27,7 @@ const Dashboard = () => {
     useEffect(() => {
         const fetchRecords = async () => {
             try {
-                // In a real app we'd fetch the studentId from the user object properly
-                // Since our JWT has userId, we need to fetch records using the student id, 
-                // but for simplicity our backend is using studentId. Let's send the userId and let backend handle it, 
-                // OR we can update the backend to query by userId instead of studentId.
-                // Wait, recordController.js `getStudentRecords` queries by student_id. 
-                // Let's modify the backend to lookup by user_id instead, or do it here.
-                // Let's just fetch it, and I'll modify the backend route slightly.
-                const response = await api.get(`/records/student/${user.userId}`);
+                const response = await api.get('/students/me/medical-history');
                 setRecords(response.data);
             } catch (error) {
                 console.error("Failed to fetch records:", error);

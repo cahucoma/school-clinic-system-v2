@@ -17,37 +17,110 @@ exports.getAvailableSlots = async (req, res) => {
 
 exports.bookAppointment = async (req, res) => {
     const userId = req.user.userId;
-    const { slotId, reason } = req.body;
+    const { slotId, reason } = req.body || {};
+    const parsedSlotId = Number(slotId);
+
+    if (!Number.isSafeInteger(parsedSlotId) || parsedSlotId < 1) {
+        return res.status(400).json({ message: 'A valid slotId is required' });
+    }
+
+    if (typeof reason !== 'string' || reason.trim().length === 0) {
+        return res.status(400).json({ message: 'An appointment reason is required' });
+    }
+
+    let connection;
+    let transactionStarted = false;
+
     try {
-        const connection = await pool.getConnection();
+        connection = await pool.getConnection();
         await connection.beginTransaction();
+        transactionStarted = true;
 
-        try {
-            const [student] = await connection.query('SELECT student_id FROM students WHERE user_id = ?', [userId]);
-            if (student.length === 0) return res.status(403).json({ message: 'Not a student' });
-            const studentId = student[0].student_id;
+        const [students] = await connection.query(
+            'SELECT student_id FROM students WHERE user_id = ? FOR UPDATE',
+            [userId]
+        );
+        if (students.length === 0) {
+            const error = new Error('Not a student');
+            error.statusCode = 403;
+            throw error;
+        }
 
-            const [appointment] = await connection.query(
-                'INSERT INTO appointments (student_id, slot_id, reason) VALUES (?, ?, ?)',
-                [studentId, slotId, reason]
-            );
-            
-            await connection.query(
-                'UPDATE time_slots SET is_booked = TRUE WHERE slot_id = ?',
-                [slotId]
-            );
+        const studentId = students[0].student_id;
+        const [slots] = await connection.query(
+            'SELECT slot_id, is_booked FROM time_slots WHERE slot_id = ? FOR UPDATE',
+            [parsedSlotId]
+        );
+        if (slots.length === 0) {
+            const error = new Error('Time slot not found');
+            error.statusCode = 404;
+            throw error;
+        }
 
-            await connection.commit();
-            res.status(201).json({ message: 'Appointment booked successfully' });
-        } catch (err) {
-            await connection.rollback();
-            throw err;
-        } finally {
+        const [duplicateAppointments] = await connection.query(
+            `SELECT appointment_id
+             FROM appointments
+             WHERE student_id = ? AND slot_id = ? AND status IN ('pending', 'confirmed')
+             LIMIT 1`,
+            [studentId, parsedSlotId]
+        );
+        if (duplicateAppointments.length > 0) {
+            const error = new Error('You already have an active appointment for this time slot');
+            error.statusCode = 409;
+            throw error;
+        }
+
+        const [existingAppointments] = await connection.query(
+            'SELECT appointment_id FROM appointments WHERE slot_id = ? LIMIT 1',
+            [parsedSlotId]
+        );
+        if (slots[0].is_booked || existingAppointments.length > 0) {
+            const error = new Error('This time slot is no longer available');
+            error.statusCode = 409;
+            throw error;
+        }
+
+        await connection.query(
+            'INSERT INTO appointments (student_id, slot_id, reason) VALUES (?, ?, ?)',
+            [studentId, parsedSlotId, reason.trim()]
+        );
+
+        const [updateResult] = await connection.query(
+            'UPDATE time_slots SET is_booked = TRUE WHERE slot_id = ? AND is_booked = FALSE',
+            [parsedSlotId]
+        );
+        if (updateResult.affectedRows !== 1) {
+            const error = new Error('This time slot is no longer available');
+            error.statusCode = 409;
+            throw error;
+        }
+
+        await connection.commit();
+        transactionStarted = false;
+        return res.status(201).json({ message: 'Appointment booked successfully' });
+    } catch (error) {
+        if (connection && transactionStarted) {
+            try {
+                await connection.rollback();
+            } catch (rollbackError) {
+                console.error('Error rolling back appointment booking:', rollbackError);
+                error = rollbackError;
+            }
+        }
+
+        if (error.code === 'ER_DUP_ENTRY') {
+            return res.status(409).json({ message: 'This time slot is no longer available' });
+        }
+        if (error.statusCode) {
+            return res.status(error.statusCode).json({ message: error.message });
+        }
+
+        console.error('Error booking appointment:', error);
+        return res.status(500).json({ message: 'Error booking appointment', error: error.message });
+    } finally {
+        if (connection) {
             connection.release();
         }
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Error booking appointment', error: error.message });
     }
 };
 

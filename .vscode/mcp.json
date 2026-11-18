@@ -1,0 +1,11 @@
+{
+  "servers": {
+    "school-clinic-mcp": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "${workspaceFolder}/school-clinic-system-main/backend/mcp-server.mjs"
+      ]
+    }
+  }
+}
