@@ -16,7 +16,7 @@ backend/
 ├── config/
 │   └── db.js                 # MySQL database connection pool configuration
 ├── controllers/              # Core business logic (The "C" in MVC)
-│   ├── adminController.js    # Analytics and staff creation
+│   ├── adminController.js    # Analytics, staff, schedules, and appointment management
 │   ├── appointmentController.js # Booking, fetching, and cancelling slots
 │   ├── authController.js     # Login and registration
 │   ├── notificationController.js # Managing student alerts
@@ -49,6 +49,23 @@ We never store plain-text passwords. When a user registers, `bcryptjs` salts and
 1. Ensure MySQL is running on your machine and the database is configured.
 2. Open a terminal and navigate to the backend folder: `cd backend`
 3. Install dependencies: `npm install`
-4. Set up your `.env` file with your database credentials and a `JWT_SECRET`.
-5. Start the server: `node server.js`
-6. The API will be available at `http://localhost:5000`.
+4. Set up `.env` with database credentials, a random `JWT_SECRET`, `DEFAULT_ADMIN_EMAIL`, a unique `DEFAULT_ADMIN_PASSWORD` of at least 12 characters (used only when no admin exists), and `CORS_ORIGINS` for the frontend origin. Existing admin accounts are preserved.
+5. Run `npm run migrate` to apply the additive appointment-history table and the existing slot/status updates. Existing appointment records are retained.
+6. Start the server with `npm start`.
+7. The API will be available at `http://localhost:5000`.
+
+Run backend tests with `npm test`. The MCP server is a separate stdio process configured through the workspace MCP settings; its query tool is read-only, row-limited, and redacts private columns.
+
+### Administrator appointment schedule
+
+The admin-only schedule UI uses these protected endpoints:
+
+- `GET /api/admin/appointments` accepts optional `from`, `to`, `status`, and `search` filters.
+- `GET /api/admin/schedules?from=YYYY-MM-DD&to=YYYY-MM-DD` lists clinic availability and the latest appointment associated with each slot (maximum range: one year).
+- `POST /api/admin/schedules` creates a future staff schedule after checking date/time validity and overlap.
+- `GET /api/admin/staff` lists providers for schedule creation.
+- `PUT /api/admin/appointments/:id/status` handles valid approval, rejection, cancellation, and completion transitions.
+- `PUT /api/admin/appointments/:id/reschedule` moves an active appointment only to an available future slot.
+- `GET /api/admin/appointments/:id/history` returns recorded admin status changes and reschedules.
+
+Rescheduling and status changes run transactionally, notify the student, and append an `appointment_history` record.

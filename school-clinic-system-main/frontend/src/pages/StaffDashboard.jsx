@@ -1,13 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { IconCalendarEvent, IconClock, IconUser, IconStethoscope, IconLogout, IconCheck, IconCalendarPlus, IconX, IconWand } from '@tabler/icons-react';
 import api from '../utils/api';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/auth';
 
 const StaffDashboard = () => {
     const [appointments, setAppointments] = useState([]);
     const [openSlots, setOpenSlots] = useState([]);
     const [selectedApt, setSelectedApt] = useState(null);
-    const [showAddStaff, setShowAddStaff] = useState(false); // Used in Admin, removed from here
     
     // Add Slot Form State
     const [showAddSlot, setShowAddSlot] = useState(false);
@@ -184,7 +183,7 @@ const StaffDashboard = () => {
                                             </td>
                                             <td className="py-4">
                                                 <div className="flex items-center gap-2">
-                                                    {apt.status === 'pending' && (
+                                                    {['pending', 'confirmed'].includes(apt.status) && (
                                                         <button 
                                                             onClick={() => setSelectedApt(apt)}
                                                             className="flex items-center gap-1 text-sm bg-green-50 text-green-600 px-3 py-1.5 rounded-lg hover:bg-green-100 transition-colors"
@@ -192,7 +191,7 @@ const StaffDashboard = () => {
                                                             <IconCheck size={16} /> Complete
                                                         </button>
                                                     )}
-                                                    {apt.status === 'pending' && (
+                                                    {['pending', 'confirmed'].includes(apt.status) && (
                                                         <button 
                                                             onClick={() => handleCancel(apt.appointment_id)}
                                                             className="flex items-center gap-1 text-sm bg-red-50 text-red-600 px-3 py-1.5 rounded-lg hover:bg-red-100 transition-colors"

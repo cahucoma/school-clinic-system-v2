@@ -5,9 +5,10 @@
   "main": "index.js",
   "scripts": {
     "start": "node server.js",
+    "migrate": "node migrate.js",
     "seed:admin": "node seed-admin.js",
     "seed:time-slots": "node seed-time-slots.js",
-    "test": "node --test"
+    "test": "node --test test"
   },
   "keywords": [],
   "author": "",

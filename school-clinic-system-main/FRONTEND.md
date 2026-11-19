@@ -16,11 +16,13 @@ The frontend of the School Clinic Appointment System is a modern, single-page ap
 frontend/
 ├── src/
 │   ├── context/          # React Context providers (AuthContext.js)
+│   ├── components/       # Shared UI, including ThemeToggle and admin navigation
 │   ├── pages/            # Main view components (Dashboard, Login, StaffDashboard)
 │   ├── utils/            # Helper functions (api.js with Axios interceptors)
 │   ├── App.jsx           # Main application entry point and routing logic
 │   ├── index.css         # Tailwind directives and global styles
 │   └── main.jsx          # React DOM mounting
+├── index.html            # Applies the saved color theme before the app renders
 ├── postcss.config.js     # PostCSS configuration for Tailwind
 ├── tailwind.config.js    # Tailwind theme customization
 └── vite.config.js        # Vite bundler configuration
@@ -42,6 +44,9 @@ We built a custom `<ProtectedRoute>` component that wraps around our sensitive r
 
 ### 3. API Interceptor (`utils/api.js`)
 We configured Axios to automatically attach the JWT token to the `Authorization` header of *every* outgoing request. This ensures that the backend securely recognizes the logged-in user without us needing to manually attach the token in every single file.
+
+### 4. Light and dark themes (`ThemeContext.jsx`, `index.css`)
+The shared `ThemeProvider` applies the selected theme across all routes, and the global `ThemeToggle` is available on authentication and dashboard pages. Light mode is the first-visit default; the selected mode is saved in `localStorage` under `school-clinic-theme`. `index.html` restores the theme before React renders, while shared Tailwind color tokens and CSS variables provide consistent dark surfaces, text, borders, form controls, and chart tooltips.
 
 ## How to Run Locally
 1. Open a terminal and navigate to the frontend folder: `cd frontend`

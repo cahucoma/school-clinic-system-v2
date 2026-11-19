@@ -2,7 +2,7 @@ const bcrypt = require('bcryptjs');
 const pool = require('../config/db');
 
 const DEFAULT_ADMIN_EMAIL = process.env.DEFAULT_ADMIN_EMAIL || 'admin@clinic.com';
-const DEFAULT_ADMIN_PASSWORD = process.env.DEFAULT_ADMIN_PASSWORD || 'admin123';
+const DEFAULT_ADMIN_PASSWORD = process.env.DEFAULT_ADMIN_PASSWORD;
 
 async function findDefaultAdmin() {
     const [users] = await pool.query(
@@ -25,6 +25,10 @@ async function ensureDefaultAdmin() {
 
         console.log(`Default admin already exists: ${DEFAULT_ADMIN_EMAIL}`);
         return { created: false, userId: existingUser.user_id };
+    }
+
+    if (typeof DEFAULT_ADMIN_PASSWORD !== 'string' || DEFAULT_ADMIN_PASSWORD.length < 12) {
+        throw new Error('Set DEFAULT_ADMIN_PASSWORD to a unique password with at least 12 characters before creating the first admin.');
     }
 
     const hashedPassword = await bcrypt.hash(DEFAULT_ADMIN_PASSWORD, 10);

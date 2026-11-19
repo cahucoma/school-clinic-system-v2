@@ -60,7 +60,7 @@ This guide is written specifically for a brand new AWS user. It will tell you ex
 5. **CRITICAL STEP**: Under "Templates", select **Free tier**! If you miss this, you will be charged money.
 6. **DB instance identifier:** Type `schoolclinic-db`
 7. **Master username:** Type `admin`
-8. **Master password:** Type `ClinicPassword123!` (and confirm it). Write this down!
+8. **Master password:** Generate a unique password and store it in AWS Secrets Manager. Do not reuse a password from documentation or source control.
 9. Scroll down to **Connectivity**:
    - **Public access:** Select **No**.
    - **VPC security group (firewall):** Choose **Choose existing**.
@@ -78,10 +78,9 @@ This guide is written specifically for a brand new AWS user. It will tell you ex
 1. In the top search bar, type **S3** and click the first result.
 2. Click the orange **Create bucket** button.
 3. **Bucket name:** Type `schoolclinic-assets-[YOUR-NAME]-[RANDOM-NUMBERS]` (e.g., `schoolclinic-assets-john-9912`). *Note: Bucket names must be completely unique globally across all of AWS, so you cannot just name it "schoolclinic-assets".*
-4. Scroll down to "Block Public Access settings for this bucket".
-5. **Uncheck** the box that says "Block all public access".
-6. Check the warning acknowledgment box that pops up underneath.
-7. Scroll to the bottom and click **Create bucket**.
+4. Keep **Block all public access** enabled.
+5. Scroll to the bottom and click **Create bucket**.
+6. Note: this app currently expects publicly readable profile-image URLs. Do not enable profile-picture uploads in production until private, signed image delivery is configured.
 
 ---
 
@@ -148,9 +147,12 @@ This guide is written specifically for a brand new AWS user. It will tell you ex
    PORT=5000
    DB_HOST=schoolclinic-db.xxxxxx.us-east-1.rds.amazonaws.com
    DB_USER=admin
-   DB_PASSWORD=ClinicPassword123!
+   DB_PASSWORD=<load-from-AWS-Secrets-Manager>
    DB_NAME=schoolclinic_db
-   JWT_SECRET=mySuperSecretKey123!
+   JWT_SECRET=<generate-a-unique-64-character-secret>
+   DEFAULT_ADMIN_EMAIL=admin@clinic.com
+   DEFAULT_ADMIN_PASSWORD=<generate-a-unique-password-of-at-least-12-characters>
+   CORS_ORIGINS=https://your-frontend-domain.example
    AWS_REGION=us-east-1
    AWS_S3_BUCKET_NAME=schoolclinic-assets-john-9912
    ```
@@ -160,7 +162,11 @@ This guide is written specifically for a brand new AWS user. It will tell you ex
    ```bash
    node -e 'const fs=require("fs");const mysql=require("mysql2/promise");require("dotenv").config();mysql.createConnection({host:process.env.DB_HOST,user:process.env.DB_USER,password:process.env.DB_PASSWORD,database:process.env.DB_NAME,multipleStatements:true}).then(c=>c.query(fs.readFileSync("schema.sql","utf8")).then(()=>{console.log("Tables created!");process.exit(0)}))'
    ```
-10. Start the backend forever using PM2:
+10. Apply the idempotent appointment migration:
+    ```bash
+    npm run migrate
+    ```
+11. Start the backend forever using PM2:
     ```bash
     sudo npm install -g pm2
     pm2 start server.js --name "clinic-backend"

@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { isValidIsoDate, isValidTimeRange, isNonEmptyText } = require('../utils/validation');
 
 exports.getAvailableSlots = async (req, res) => {
     try {
@@ -7,11 +8,14 @@ exports.getAvailableSlots = async (req, res) => {
             FROM time_slots t 
             JOIN staff s ON t.staff_id = s.staff_id 
             WHERE t.is_booked = FALSE
+              AND (t.slot_date > CURRENT_DATE()
+                   OR (t.slot_date = CURRENT_DATE() AND t.start_time > CURRENT_TIME()))
             ORDER BY t.slot_date, t.start_time
         `);
         res.json(slots);
     } catch (error) {
-        res.status(500).json({ message: 'Error fetching slots', error: error.message });
+        console.error('Error fetching available slots:', error);
+        res.status(500).json({ message: 'Unable to fetch available appointments.' });
     }
 };
 
@@ -24,8 +28,8 @@ exports.bookAppointment = async (req, res) => {
         return res.status(400).json({ message: 'A valid slotId is required' });
     }
 
-    if (typeof reason !== 'string' || reason.trim().length === 0) {
-        return res.status(400).json({ message: 'An appointment reason is required' });
+    if (!isNonEmptyText(reason, 2000)) {
+        return res.status(400).json({ message: 'Enter an appointment reason of 1 to 2000 characters.' });
     }
 
     let connection;
@@ -48,7 +52,11 @@ exports.bookAppointment = async (req, res) => {
 
         const studentId = students[0].student_id;
         const [slots] = await connection.query(
-            'SELECT slot_id, is_booked FROM time_slots WHERE slot_id = ? FOR UPDATE',
+            `SELECT slot_id, is_booked FROM time_slots
+             WHERE slot_id = ?
+               AND (slot_date > CURRENT_DATE()
+                    OR (slot_date = CURRENT_DATE() AND start_time > CURRENT_TIME()))
+             FOR UPDATE`,
             [parsedSlotId]
         );
         if (slots.length === 0) {
@@ -71,8 +79,8 @@ exports.bookAppointment = async (req, res) => {
         }
 
         const [existingAppointments] = await connection.query(
-            'SELECT appointment_id FROM appointments WHERE slot_id = ? LIMIT 1',
-            [parsedSlotId]
+            'SELECT appointment_id FROM appointments WHERE slot_id = ? AND status IN (?, ?) LIMIT 1',
+            [parsedSlotId, 'pending', 'confirmed']
         );
         if (slots[0].is_booked || existingAppointments.length > 0) {
             const error = new Error('This time slot is no longer available');
@@ -86,7 +94,10 @@ exports.bookAppointment = async (req, res) => {
         );
 
         const [updateResult] = await connection.query(
-            'UPDATE time_slots SET is_booked = TRUE WHERE slot_id = ? AND is_booked = FALSE',
+            `UPDATE time_slots SET is_booked = TRUE
+             WHERE slot_id = ? AND is_booked = FALSE
+               AND (slot_date > CURRENT_DATE()
+                    OR (slot_date = CURRENT_DATE() AND start_time > CURRENT_TIME()))`,
             [parsedSlotId]
         );
         if (updateResult.affectedRows !== 1) {
@@ -116,11 +127,81 @@ exports.bookAppointment = async (req, res) => {
         }
 
         console.error('Error booking appointment:', error);
-        return res.status(500).json({ message: 'Error booking appointment', error: error.message });
+        return res.status(500).json({ message: 'Unable to book this appointment at this time.' });
     } finally {
         if (connection) {
             connection.release();
         }
+    }
+};
+
+exports.getStudentAppointments = async (req, res) => {
+    try {
+        const [appointments] = await pool.query(`
+            SELECT a.appointment_id, a.reason, a.status, a.created_at,
+                   t.slot_date, t.start_time, t.end_time,
+                   s.first_name AS staff_first_name, s.last_name AS staff_last_name,
+                   s.specialization, s.room_number
+            FROM appointments a
+            JOIN students st ON a.student_id = st.student_id
+            JOIN time_slots t ON a.slot_id = t.slot_id
+            JOIN staff s ON t.staff_id = s.staff_id
+            WHERE st.user_id = ?
+            ORDER BY t.slot_date DESC, t.start_time DESC
+        `, [req.user.userId]);
+        res.json(appointments);
+    } catch (error) {
+        console.error('Error fetching student appointments:', error);
+        res.status(500).json({ message: 'Unable to fetch your appointments.' });
+    }
+};
+
+exports.cancelByStudent = async (req, res) => {
+    const appointmentId = Number(req.params.id);
+    if (!Number.isSafeInteger(appointmentId) || appointmentId < 1) {
+        return res.status(400).json({ message: 'A valid appointment id is required.' });
+    }
+
+    let connection;
+    try {
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
+        const [appointments] = await connection.query(`
+            SELECT a.appointment_id, a.slot_id, a.status
+            FROM appointments a
+            JOIN students st ON a.student_id = st.student_id
+            WHERE a.appointment_id = ? AND st.user_id = ?
+            FOR UPDATE
+        `, [appointmentId, req.user.userId]);
+        if (appointments.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ message: 'Appointment not found.' });
+        }
+        if (!['pending', 'confirmed'].includes(appointments[0].status)) {
+            await connection.rollback();
+            return res.status(409).json({ message: 'Only active appointments can be cancelled.' });
+        }
+
+        await connection.query(
+            'UPDATE appointments SET status = ? WHERE appointment_id = ?',
+            ['cancelled', appointmentId]
+        );
+        await connection.query(
+            'UPDATE time_slots SET is_booked = FALSE WHERE slot_id = ? AND slot_date >= CURRENT_DATE()',
+            [appointments[0].slot_id]
+        );
+        await connection.query(
+            'INSERT INTO notifications (user_id, message) VALUES (?, ?)',
+            [req.user.userId, 'Your appointment has been cancelled.']
+        );
+        await connection.commit();
+        return res.json({ message: 'Appointment cancelled successfully.' });
+    } catch (error) {
+        if (connection) await connection.rollback();
+        console.error('Error cancelling student appointment:', error);
+        return res.status(500).json({ message: 'Unable to cancel this appointment at this time.' });
+    } finally {
+        if (connection) connection.release();
     }
 };
 
@@ -146,7 +227,8 @@ exports.getStaffAppointments = async (req, res) => {
         
         res.json(appointments);
     } catch (error) {
-        res.status(500).json({ message: 'Error fetching staff appointments', error: error.message });
+        console.error('Error fetching staff appointments:', error);
+        res.status(500).json({ message: 'Unable to fetch staff appointments.' });
     }
 };
 
@@ -167,85 +249,118 @@ exports.getStaffSlots = async (req, res) => {
         
         res.json(slots);
     } catch (error) {
-        res.status(500).json({ message: 'Error fetching staff slots', error: error.message });
+        console.error('Error fetching staff slots:', error);
+        res.status(500).json({ message: 'Unable to fetch available schedules.' });
     }
 };
 
 exports.createTimeSlot = async (req, res) => {
     const userId = req.user.userId;
-    const { slotDate, startTime, endTime } = req.body;
+    const { slotDate, startTime, endTime } = req.body || {};
+    if (!isValidIsoDate(slotDate) || !isValidTimeRange(startTime, endTime)) {
+        return res.status(400).json({ message: 'Enter a valid date and a start time before the end time.' });
+    }
+
+    let connection;
     try {
-        // Find staff id
-        const [staff] = await pool.query('SELECT staff_id FROM staff WHERE user_id = ?', [userId]);
-        if (staff.length === 0) return res.status(403).json({ message: 'Not a staff member' });
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
+        const [staff] = await connection.query('SELECT staff_id FROM staff WHERE user_id = ? FOR UPDATE', [userId]);
+        if (staff.length === 0) {
+            await connection.rollback();
+            return res.status(403).json({ message: 'Not a staff member' });
+        }
         
         const staffId = staff[0].staff_id;
+        const [futureDate] = await connection.query(
+            'SELECT (? > CURRENT_DATE() OR (? = CURRENT_DATE() AND ? > CURRENT_TIME())) AS is_future',
+            [slotDate, slotDate, startTime]
+        );
+        if (!futureDate[0].is_future) {
+            await connection.rollback();
+            return res.status(400).json({ message: 'Appointments must be scheduled for a future date and time.' });
+        }
+        const [overlaps] = await connection.query(`
+            SELECT slot_id FROM time_slots
+            WHERE staff_id = ? AND slot_date = ?
+              AND start_time < ? AND end_time > ?
+            LIMIT 1
+        `, [staffId, slotDate, endTime, startTime]);
+        if (overlaps.length > 0) {
+            await connection.rollback();
+            return res.status(409).json({ message: 'This schedule overlaps an existing appointment slot.' });
+        }
 
-        await pool.query(
+        await connection.query(
             'INSERT INTO time_slots (staff_id, slot_date, start_time, end_time) VALUES (?, ?, ?, ?)',
             [staffId, slotDate, startTime, endTime]
         );
 
+        await connection.commit();
         res.status(201).json({ message: 'Time slot created successfully' });
     } catch (error) {
+        if (connection) await connection.rollback();
         if (error.code === 'ER_DUP_ENTRY') {
-            return res.status(400).json({ message: 'This time slot already exists for you' });
+            return res.status(409).json({ message: 'This time slot already exists for you' });
         }
         console.error("Server error creating slot:", error);
-        res.status(500).json({ message: 'Error creating time slot', error: error.message });
+        res.status(500).json({ message: 'Unable to create this schedule at this time.' });
+    } finally {
+        if (connection) connection.release();
     }
 };
 
 exports.cancelByStaff = async (req, res) => {
-    const { id } = req.params; // appointment_id
+    const appointmentId = Number(req.params.id);
+    if (!Number.isSafeInteger(appointmentId) || appointmentId < 1) {
+        return res.status(400).json({ message: 'A valid appointment id is required.' });
+    }
     
+    let connection;
     try {
-        const connection = await pool.getConnection();
+        connection = await pool.getConnection();
         await connection.beginTransaction();
-
-        try {
-            // 1. Update appointment status
-            await connection.query(
-                'UPDATE appointments SET status = "cancelled" WHERE appointment_id = ?',
-                [id]
-            );
-
-            // 2. Fetch the student's user_id and staff info to construct the notification
-            const [appointmentData] = await connection.query(`
-                SELECT a.student_id, st.user_id as student_user_id, sf.last_name as staff_last_name, t.slot_date, t.start_time
-                FROM appointments a
-                JOIN students st ON a.student_id = st.student_id
-                JOIN time_slots t ON a.slot_id = t.slot_id
-                JOIN staff sf ON t.staff_id = sf.staff_id
-                WHERE a.appointment_id = ?
-            `, [id]);
-
-            if (appointmentData.length > 0) {
-                const data = appointmentData[0];
-                const dateStr = new Date(data.slot_date).toLocaleDateString();
-                const timeStr = data.start_time;
-                const message = `Your appointment on ${dateStr} at ${timeStr} was cancelled by Dr. ${data.staff_last_name} because they became suddenly busy.`;
-
-                // 3. Insert Notification
-                await connection.query(
-                    'INSERT INTO notifications (user_id, message) VALUES (?, ?)',
-                    [data.student_user_id, message]
-                );
-            }
-
-            // Note: We deliberately do NOT free up the time slot (is_booked stays true) 
-            // because the doctor indicated they are busy during this time!
-
-            await connection.commit();
-            res.json({ message: 'Appointment cancelled and student notified' });
-        } catch (err) {
+        const [accessibleAppointments] = await connection.query(`
+            SELECT a.status
+            FROM appointments a
+            JOIN time_slots t ON a.slot_id = t.slot_id
+            JOIN staff sf ON t.staff_id = sf.staff_id
+            WHERE a.appointment_id = ? AND sf.user_id = ?
+            FOR UPDATE
+        `, [appointmentId, req.user.userId]);
+        if (accessibleAppointments.length === 0) {
             await connection.rollback();
-            throw err;
-        } finally {
-            connection.release();
+            return res.status(404).json({ message: 'Appointment not found for this staff member.' });
         }
+        if (!['pending', 'confirmed'].includes(accessibleAppointments[0].status)) {
+            await connection.rollback();
+            return res.status(409).json({ message: 'Only active appointments can be cancelled.' });
+        }
+
+        await connection.query(
+            'UPDATE appointments SET status = "cancelled" WHERE appointment_id = ?',
+            [appointmentId]
+        );
+        const [appointmentData] = await connection.query(`
+            SELECT st.user_id AS student_user_id
+            FROM appointments a
+            JOIN students st ON a.student_id = st.student_id
+            JOIN time_slots t ON a.slot_id = t.slot_id
+            JOIN staff sf ON t.staff_id = sf.staff_id
+            WHERE a.appointment_id = ? AND sf.user_id = ?
+        `, [appointmentId, req.user.userId]);
+        await connection.query(
+            'INSERT INTO notifications (user_id, message) VALUES (?, ?)',
+            [appointmentData[0].student_user_id, 'Your appointment was cancelled by clinic staff. The reserved clinic slot will remain unavailable.']
+        );
+
+        await connection.commit();
+        return res.json({ message: 'Appointment cancelled and student notified' });
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Error cancelling appointment', error: error.message });
+        if (connection) await connection.rollback();
+        console.error('Error cancelling staff appointment:', error);
+        return res.status(500).json({ message: 'Unable to cancel this appointment at this time.' });
+    } finally {
+        if (connection) connection.release();
     }
 };

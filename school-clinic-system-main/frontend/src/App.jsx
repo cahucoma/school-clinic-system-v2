@@ -1,11 +1,17 @@
-import React from 'react';
+import { lazy, Suspense } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import { AuthProvider, useAuth } from './context/AuthContext';
-import Dashboard from './pages/Dashboard';
-import StaffDashboard from './pages/StaffDashboard';
-import AdminDashboard from './pages/AdminDashboard';
-import Login from './pages/Login';
-import Register from './pages/Register';
+import { AuthProvider } from './context/AuthContext';
+import { useAuth } from './context/auth';
+import ThemeProvider from './context/ThemeContext';
+import ThemeToggle from './components/ThemeToggle';
+
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const StaffDashboard = lazy(() => import('./pages/StaffDashboard'));
+const AdminDashboard = lazy(() => import('./pages/AdminDashboard'));
+const AppointmentSchedule = lazy(() => import('./pages/AppointmentSchedule'));
+const AdminLayout = lazy(() => import('./components/AdminLayout'));
+const Login = lazy(() => import('./pages/Login'));
+const Register = lazy(() => import('./pages/Register'));
 
 const ProtectedRoute = ({ children, allowedRoles }) => {
   const { user, loading } = useAuth();
@@ -19,39 +25,52 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
 
 function App() {
   return (
-    <AuthProvider>
-      <Router>
-        <Routes>
-          <Route path="/" element={<Navigate to="/dashboard" replace />} />
-          <Route path="/login" element={<Login />} />
-          <Route path="/register" element={<Register />} />
-          <Route 
-            path="/dashboard" 
-            element={
-              <ProtectedRoute allowedRoles={['student']}>
-                <Dashboard />
-              </ProtectedRoute>
-            } 
-          />
-          <Route 
-            path="/staff-dashboard" 
-            element={
-              <ProtectedRoute allowedRoles={['staff', 'admin']}>
-                <StaffDashboard />
-              </ProtectedRoute>
-            } 
-          />
-          <Route 
-            path="/admin-dashboard" 
-            element={
-              <ProtectedRoute allowedRoles={['admin']}>
-                <AdminDashboard />
-              </ProtectedRoute>
-            } 
-          />
-        </Routes>
-      </Router>
-    </AuthProvider>
+    <ThemeProvider>
+      <AuthProvider>
+        <Router>
+          <ThemeToggle />
+          <Suspense fallback={<div className="min-h-screen flex items-center justify-center text-slate-500" role="status">Loading page...</div>}>
+            <Routes>
+              <Route path="/" element={<Navigate to="/dashboard" replace />} />
+              <Route path="/login" element={<Login />} />
+              <Route path="/register" element={<Register />} />
+              <Route
+                path="/dashboard"
+                element={
+                  <ProtectedRoute allowedRoles={['student']}>
+                    <Dashboard />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/staff-dashboard"
+                element={
+                  <ProtectedRoute allowedRoles={['staff']}>
+                    <StaffDashboard />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/admin-dashboard"
+                element={
+                  <ProtectedRoute allowedRoles={['admin']}>
+                    <AdminLayout><AdminDashboard /></AdminLayout>
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/admin/appointments"
+                element={
+                  <ProtectedRoute allowedRoles={['admin']}>
+                    <AdminLayout><AppointmentSchedule /></AdminLayout>
+                  </ProtectedRoute>
+                }
+              />
+            </Routes>
+          </Suspense>
+        </Router>
+      </AuthProvider>
+    </ThemeProvider>
   );
 }
 

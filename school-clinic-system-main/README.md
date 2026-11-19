@@ -43,13 +43,16 @@ The backend serves as the API bridge between the React frontend and the MySQL da
    DB_USER=root
    DB_PASSWORD=
    DB_NAME=schoolclinic_db
-   JWT_SECRET=supersecret12345
+   JWT_SECRET=<paste-a-random-64-character-secret>
    DEFAULT_ADMIN_EMAIL=admin@clinic.com
-   DEFAULT_ADMIN_PASSWORD=admin123
+   DEFAULT_ADMIN_PASSWORD=<unique-password-at-least-12-characters>
+   CORS_ORIGINS=http://localhost:5173
    ```
+   Generate a JWT secret with `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`. Never commit the `.env` file.
    *(Note: XAMPP's default MySQL username is `root` with no password, which is why `DB_PASSWORD` is blank).*
-5. Start the backend server:
+5. Apply the non-destructive appointment index migration (needed to release cancelled slots while retaining appointment history), then start the backend server:
    ```bash
+   npm run migrate
    node server.js
    ```
    *You should see a message saying "Server running on port 5000". Leave this terminal open!*
@@ -77,10 +80,6 @@ The frontend is built with React and Vite.
 ---
 
 ## Step 4: Testing the Application
-The application is now fully running! When the backend starts, it automatically creates the default admin if that account does not already exist. To test the different portals, use:
+The application is now fully running! When the backend starts, it creates the default administrator only if one does not already exist and a secure `DEFAULT_ADMIN_PASSWORD` is configured. Use the email and password values from your local `.env` file:
 
-**Admin Account:**
-- **Email:** `admin@clinic.com`
-- **Password:** `admin123`
-
-Log in with this account, and from the Admin Dashboard, you can create Doctor/Staff accounts to test the Staff Portal. You can also register a brand new account from the login screen to test the Student Portal!
+Log in with that account, then use the Admin Dashboard to create staff accounts. Students can register from the login screen.

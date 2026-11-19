@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/auth';
 import { IconStethoscope, IconEye, IconEyeOff } from '@tabler/icons-react';
 
 const Register = () => {
@@ -76,7 +76,7 @@ const Register = () => {
                     <div>
                         <label className="block text-sm font-medium text-slate-700 mb-1">Password</label>
                         <div className="relative">
-                            <input type={showPassword ? "text" : "password"} name="password" required onChange={handleChange} className="w-full px-4 py-2 pr-10 border border-slate-200 rounded-xl focus:outline-none focus:border-blue-500" />
+                            <input type={showPassword ? "text" : "password"} name="password" required minLength={10} maxLength={128} autoComplete="new-password" onChange={handleChange} className="w-full px-4 py-2 pr-10 border border-slate-200 rounded-xl focus:outline-none focus:border-blue-500" />
                             <button
                                 type="button"
                                 onClick={() => setShowPassword(!showPassword)}

@@ -50,12 +50,13 @@ CREATE TABLE IF NOT EXISTS time_slots (
 CREATE TABLE IF NOT EXISTS appointments (
     appointment_id INT AUTO_INCREMENT PRIMARY KEY,
     student_id INT NOT NULL,
-    slot_id INT NOT NULL UNIQUE, -- Unique ensures a time slot cannot be double-booked
+    slot_id INT NOT NULL,
     reason TEXT NOT NULL,
-    status ENUM('pending', 'confirmed', 'cancelled', 'completed') DEFAULT 'pending',
+    status ENUM('pending', 'confirmed', 'rejected', 'cancelled', 'completed') DEFAULT 'pending',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE,
-    FOREIGN KEY (slot_id) REFERENCES time_slots(slot_id) ON DELETE RESTRICT
+    FOREIGN KEY (slot_id) REFERENCES time_slots(slot_id) ON DELETE RESTRICT,
+    INDEX idx_appointments_slot_id (slot_id)
 );
 
 -- 6. Medical Records Table
@@ -79,4 +80,22 @@ CREATE TABLE IF NOT EXISTS notifications (
     is_read BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+-- 8. Appointment History (admin status changes and reschedules)
+CREATE TABLE IF NOT EXISTS appointment_history (
+    history_id INT AUTO_INCREMENT PRIMARY KEY,
+    appointment_id INT NOT NULL,
+    action ENUM('status_changed', 'rescheduled') NOT NULL,
+    previous_status ENUM('pending', 'confirmed', 'rejected', 'cancelled', 'completed') DEFAULT NULL,
+    new_status ENUM('pending', 'confirmed', 'rejected', 'cancelled', 'completed') DEFAULT NULL,
+    previous_slot_id INT DEFAULT NULL,
+    new_slot_id INT DEFAULT NULL,
+    changed_by INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (appointment_id) REFERENCES appointments(appointment_id) ON DELETE CASCADE,
+    FOREIGN KEY (previous_slot_id) REFERENCES time_slots(slot_id) ON DELETE RESTRICT,
+    FOREIGN KEY (new_slot_id) REFERENCES time_slots(slot_id) ON DELETE RESTRICT,
+    FOREIGN KEY (changed_by) REFERENCES users(user_id) ON DELETE RESTRICT,
+    INDEX idx_appointment_history_appointment (appointment_id, created_at)
 );

@@ -9,6 +9,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import db from "./config/db.js";
+import { redactPrivateColumns, validateReadOnlyQuery } from "./mcp-security.mjs";
 
 const ALLOWED_TABLES = [
   "appointments",
@@ -19,6 +20,15 @@ const ALLOWED_TABLES = [
   "time_slots",
   "users",
 ];
+const PREVIEW_ORDER_COLUMNS = {
+  appointments: "appointment_id",
+  medical_records: "record_id",
+  notifications: "notification_id",
+  staff: "staff_id",
+  students: "student_id",
+  time_slots: "slot_id",
+  users: "user_id",
+};
 
 const server = new McpServer({
   name: "school-clinic-mcp",
@@ -37,8 +47,9 @@ server.tool(
         content: [{ type: "text", text: JSON.stringify(rows, null, 2) }],
       };
     } catch (error) {
+      console.error("Failed to inspect clinic tables:", error);
       return {
-        content: [{ type: "text", text: `Database Error: ${error.message}` }],
+        content: [{ type: "text", text: "Unable to inspect clinic tables. Check database connectivity." }],
         isError: true,
       };
     }
@@ -61,8 +72,9 @@ server.tool(
         content: [{ type: "text", text: JSON.stringify(rows, null, 2) }],
       };
     } catch (error) {
+      console.error("Failed to describe clinic table:", error);
       return {
-        content: [{ type: "text", text: `Database Error: ${error.message}` }],
+        content: [{ type: "text", text: "Unable to describe this clinic table. Check database connectivity." }],
         isError: true,
       };
     }
@@ -84,15 +96,18 @@ server.tool(
   },
   async ({ table_name, limit }) => {
     try {
-      const [rows] = await db.query(`SELECT * FROM \`${table_name}\` LIMIT ?`, [
-        limit,
-      ]);
+      const orderColumn = PREVIEW_ORDER_COLUMNS[table_name];
+      const [rows] = await db.query(
+        `SELECT * FROM \`${table_name}\` ORDER BY \`${orderColumn}\` DESC LIMIT ?`,
+        [limit],
+      );
       return {
-        content: [{ type: "text", text: JSON.stringify(rows, null, 2) }],
+        content: [{ type: "text", text: JSON.stringify(redactPrivateColumns(rows), null, 2) }],
       };
     } catch (error) {
+      console.error("Failed to preview clinic table:", error);
       return {
-        content: [{ type: "text", text: `Database Error: ${error.message}` }],
+        content: [{ type: "text", text: "Unable to preview this clinic table. Check database connectivity." }],
         isError: true,
       };
     }
@@ -109,29 +124,25 @@ server.tool(
       .describe("Valid MySQL SELECT statement (SELECT ra ang pwede)"),
   },
   async ({ sql }) => {
-    const cleaned = sql.trim();
-    if (!/^select\s/i.test(cleaned)) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: "Security Error: SELECT queries ra ang gitugotan ani nga tool.",
-          },
-        ],
-        isError: true,
-      };
-    }
-
+    let connection;
     try {
-      const [rows] = await db.query(cleaned);
+      const cleaned = validateReadOnlyQuery(sql);
+      connection = await db.getConnection();
+      await connection.query("START TRANSACTION READ ONLY");
+      const [rows] = await connection.query({ sql: cleaned, timeout: 5000 });
+      await connection.commit();
       return {
-        content: [{ type: "text", text: JSON.stringify(rows, null, 2) }],
+        content: [{ type: "text", text: JSON.stringify(redactPrivateColumns(rows), null, 2) }],
       };
     } catch (error) {
+      if (connection) await connection.rollback();
+      console.error("Read-only MCP query failed:", error);
       return {
-        content: [{ type: "text", text: `SQL Error: ${error.message}` }],
+        content: [{ type: "text", text: "Query rejected or failed. Check that it is a permitted SELECT and that the database is available." }],
         isError: true,
       };
+    } finally {
+      if (connection) connection.release();
     }
   }
 );

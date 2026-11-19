@@ -1,16 +1,12 @@
-import React, { createContext, useState, useEffect, useContext } from 'react';
+import React, { useState, useEffect } from 'react';
 import api from '../utils/api';
-
-const AuthContext = createContext();
-
-export const useAuth = () => useContext(AuthContext);
+import { AuthContext } from './auth';
 
 export const AuthProvider = ({ children }) => {
     const [user, setUser] = useState(null);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        // Simple initialization from localStorage
         const token = localStorage.getItem('token');
         const role = localStorage.getItem('role');
         const userId = localStorage.getItem('userId');
@@ -19,6 +15,10 @@ export const AuthProvider = ({ children }) => {
             setUser({ token, role, userId });
         }
         setLoading(false);
+
+        const handleExpiredSession = () => setUser(null);
+        window.addEventListener('clinic:auth-expired', handleExpiredSession);
+        return () => window.removeEventListener('clinic:auth-expired', handleExpiredSession);
     }, []);
 
     const login = async (email, password) => {

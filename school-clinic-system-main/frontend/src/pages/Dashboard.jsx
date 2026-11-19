@@ -1,10 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { IconCalendarEvent, IconClock, IconUser, IconStethoscope, IconLogout, IconSettings, IconBell, IconX } from '@tabler/icons-react';
 import api from '../utils/api';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/auth';
 
 const Dashboard = () => {
     const [slots, setSlots] = useState([]);
+    const [slotsLoading, setSlotsLoading] = useState(true);
+    const [slotsError, setSlotsError] = useState('');
+    const [appointments, setAppointments] = useState([]);
+    const [appointmentsError, setAppointmentsError] = useState('');
     const [records, setRecords] = useState([]);
     const [notifications, setNotifications] = useState([]);
     const [showNotifications, setShowNotifications] = useState(false);
@@ -19,8 +23,23 @@ const Dashboard = () => {
         try {
             const response = await api.get('/appointments/slots');
             setSlots(response.data);
+            setSlotsError('');
         } catch (error) {
             console.error("Failed to fetch slots:", error);
+            setSlotsError(error.response?.data?.message || 'Unable to load appointment times.');
+        } finally {
+            setSlotsLoading(false);
+        }
+    };
+
+    const fetchAppointments = async () => {
+        try {
+            const response = await api.get('/appointments/me');
+            setAppointments(response.data);
+            setAppointmentsError('');
+        } catch (error) {
+            console.error('Failed to fetch appointments:', error);
+            setAppointmentsError(error.response?.data?.message || 'Unable to load your appointments.');
         }
     };
 
@@ -49,12 +68,13 @@ const Dashboard = () => {
                 setProfile(response.data);
                 setContactNumber(response.data.contact_number || '');
             } catch (error) {
-                console.error("Failed to fetch profile");
+                console.error('Failed to fetch profile:', error);
             }
         };
 
         fetchSlots();
         if (user?.role === 'student') {
+            fetchAppointments();
             fetchRecords();
             fetchNotifications();
             fetchProfile();
@@ -75,30 +95,42 @@ const Dashboard = () => {
                 reason
             });
             alert("Appointment booked successfully!");
-            fetchSlots(); // refresh list
+            await Promise.all([fetchSlots(), fetchAppointments()]);
         } catch (error) {
             alert(error.response?.data?.message || "Failed to book appointment");
+        }
+    };
+
+    const handleCancelAppointment = async (appointmentId) => {
+        if (!window.confirm('Cancel this appointment? An upcoming slot will become available to another student.')) return;
+        try {
+            await api.put(`/appointments/${appointmentId}/cancel`);
+            await Promise.all([fetchSlots(), fetchAppointments()]);
+        } catch (error) {
+            alert(error.response?.data?.message || 'Failed to cancel appointment');
         }
     };
 
     const handleUpdateProfile = async (e) => {
         e.preventDefault();
         try {
-            await api.put(`/students/me`, { contactNumber });
+            await api.put('/students/me', { contactNumber });
             
             if (profilePictureFile) {
                 setUploadingPic(true);
                 const formData = new FormData();
                 formData.append('profilePicture', profilePictureFile);
-                await api.post('/upload/profile-picture', formData, {
+                const response = await api.post('/upload/profile-picture', formData, {
                     headers: { 'Content-Type': 'multipart/form-data' }
                 });
                 setUploadingPic(false);
+                setProfile((current) => ({ ...current, profile_picture_url: response.data.url }));
             }
 
+            setProfile((current) => ({ ...current, contact_number: contactNumber }));
+            setProfilePictureFile(null);
             alert("Profile updated successfully!");
             setShowSettings(false);
-            window.location.reload(); // Reload to fetch new picture
         } catch (error) {
             console.error("Failed to update profile:", error);
             setUploadingPic(false);
@@ -113,7 +145,7 @@ const Dashboard = () => {
             await api.put(`/notifications/${id}/read`);
             setNotifications(notifications.map(n => n.notification_id === id ? {...n, is_read: true} : n));
         } catch (error) {
-            console.error("Failed to mark as read");
+            console.error('Failed to mark notification as read:', error);
         }
     };
 
@@ -212,7 +244,11 @@ const Dashboard = () => {
                         </h2>
                         
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            {!Array.isArray(slots) || slots.length === 0 ? (
+                            {slotsLoading ? (
+                                <p className="text-slate-500" role="status">Loading available times...</p>
+                            ) : slotsError ? (
+                                <p className="text-red-600" role="alert">{slotsError}</p>
+                            ) : !Array.isArray(slots) || slots.length === 0 ? (
                                 <p className="text-slate-500">No available slots at the moment.</p>
                             ) : slots.map((slot) => (
                                 <button 
@@ -235,6 +271,55 @@ const Dashboard = () => {
                                 </button>
                             ))}
                         </div>
+                    </div>
+
+                    <div className="bg-white p-5 md:p-8 rounded-3xl shadow-sm border border-slate-100">
+                        <div className="flex items-center justify-between gap-3 mb-5">
+                            <h2 className="text-lg md:text-xl font-semibold flex items-center gap-2">
+                                <IconClock className="text-blue-500" />
+                                My Appointments
+                            </h2>
+                            <span className="text-xs font-medium text-slate-500">{appointments.length} total</span>
+                        </div>
+                        {appointmentsError ? (
+                            <p role="alert" className="text-sm text-red-600">{appointmentsError}</p>
+                        ) : appointments.length === 0 ? (
+                            <p className="text-slate-500 text-sm">Your appointment history will appear here after you book.</p>
+                        ) : (
+                            <div className="flex flex-col divide-y divide-slate-100">
+                                {appointments.map((appointment) => (
+                                    <div key={appointment.appointment_id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-4 first:pt-0 last:pb-0">
+                                        <div>
+                                            <p className="font-semibold text-slate-800">
+                                                {new Date(appointment.slot_date).toLocaleDateString()} · {appointment.start_time}
+                                            </p>
+                                            <p className="text-sm text-slate-500">
+                                                {appointment.staff_first_name} {appointment.staff_last_name}
+                                                {appointment.specialization ? ` · ${appointment.specialization}` : ''}
+                                            </p>
+                                            <p className="text-sm text-slate-600 mt-1">{appointment.reason}</p>
+                                        </div>
+                                        <div className="flex items-center gap-3">
+                                            <span className={`text-xs font-semibold px-2.5 py-1 rounded-full capitalize ${
+                                                appointment.status === 'confirmed' ? 'bg-green-50 text-green-700' :
+                                                appointment.status === 'pending' ? 'bg-amber-50 text-amber-700' :
+                                                ['cancelled', 'rejected'].includes(appointment.status) ? 'bg-red-50 text-red-700' :
+                                                'bg-slate-100 text-slate-600'
+                                            }`}>{appointment.status}</span>
+                                            {['pending', 'confirmed'].includes(appointment.status) && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleCancelAppointment(appointment.appointment_id)}
+                                                    className="text-sm font-medium text-red-600 hover:text-red-700"
+                                                >
+                                                    Cancel
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
                     </div>
                 </section>
 

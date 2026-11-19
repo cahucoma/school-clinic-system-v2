@@ -9,19 +9,28 @@ exports.getNotifications = async (req, res) => {
         );
         res.json(notifications);
     } catch (error) {
-        res.status(500).json({ message: 'Error fetching notifications', error: error.message });
+        console.error('Error fetching notifications:', error);
+        res.status(500).json({ message: 'Unable to fetch notifications.' });
     }
 };
 
 exports.markAsRead = async (req, res) => {
     const { id } = req.params;
+    if (!/^\d+$/.test(id)) {
+        return res.status(400).json({ message: 'A valid notification id is required.' });
+    }
+
     try {
-        await pool.query(
-            'UPDATE notifications SET is_read = TRUE WHERE notification_id = ?',
-            [id]
+        const [result] = await pool.query(
+            'UPDATE notifications SET is_read = TRUE WHERE notification_id = ? AND user_id = ?',
+            [id, req.user.userId]
         );
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ message: 'Notification not found.' });
+        }
         res.json({ message: 'Notification marked as read' });
     } catch (error) {
-        res.status(500).json({ message: 'Error updating notification', error: error.message });
+        console.error('Error updating notification:', error);
+        res.status(500).json({ message: 'Unable to update this notification.' });
     }
 };
