@@ -111,6 +111,16 @@ export default function AppointmentSchedule() {
     const [rescheduleSlotId, setRescheduleSlotId] = useState('');
     const [rescheduleLoading, setRescheduleLoading] = useState(false);
     const [rescheduleSaving, setRescheduleSaving] = useState(false);
+    const [showSettings, setShowSettings] = useState(false);
+    const [settingsSaving, setSettingsSaving] = useState(false);
+    const [settings, setSettings] = useState({
+        openingTime: '08:00',
+        closingTime: '17:00',
+        appointmentDurationMinutes: 30,
+        maxDailyAppointments: 50,
+    });
+    const [rescheduleRequests, setRescheduleRequests] = useState([]);
+    const [rescheduleReviewSaving, setRescheduleReviewSaving] = useState(null);
 
     const range = useMemo(() => monthRange(month), [month]);
     const calendarCells = useMemo(() => {
@@ -172,6 +182,31 @@ export default function AppointmentSchedule() {
                 setStaffError(error.response?.data?.message || 'Unable to load clinic staff.');
             });
     }, []);
+
+    useEffect(() => {
+        api.get('/admin/settings')
+            .then((response) => setSettings(response.data))
+            .catch((error) => setNotice({
+                type: 'error',
+                text: error.response?.data?.message || 'Unable to load clinic settings.',
+            }));
+    }, []);
+
+    const loadRescheduleRequests = useCallback(async () => {
+        try {
+            const response = await api.get('/admin/reschedule-requests');
+            setRescheduleRequests(response.data);
+        } catch (error) {
+            setNotice({
+                type: 'error',
+                text: error.response?.data?.message || 'Unable to load reschedule requests.',
+            });
+        }
+    }, []);
+
+    useEffect(() => {
+        loadRescheduleRequests();
+    }, [loadRescheduleRequests]);
 
     useEffect(() => {
         if (!notice) return undefined;
@@ -315,10 +350,15 @@ export default function AppointmentSchedule() {
                     <h1 className="mt-1 text-3xl font-bold tracking-tight text-slate-900">Appointment Schedule</h1>
                     <p className="mt-2 text-sm text-slate-500">Review availability, manage bookings, and update appointment status.</p>
                 </div>
-                <button type="button" onClick={openScheduleForm} className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700">
-                    <IconPlus size={18} />
-                    Add schedule
-                </button>
+                <div className="flex flex-wrap gap-2">
+                    <button type="button" onClick={() => setShowSettings(true)} className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50">
+                        Clinic settings
+                    </button>
+                    <button type="button" onClick={openScheduleForm} className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700">
+                        <IconPlus size={18} />
+                        Add schedule
+                    </button>
+                </div>
             </header>
 
             {notice && (
@@ -328,6 +368,49 @@ export default function AppointmentSchedule() {
                     <span>{notice.text}</span>
                     <button type="button" onClick={() => setNotice(null)} aria-label="Dismiss notification" className="rounded-md p-1 hover:bg-black/5"><IconX size={16} /></button>
                 </div>
+            )}
+
+            {rescheduleRequests.filter((request) => request.status === 'pending').length > 0 && (
+                <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+                    <h2 className="text-lg font-bold text-slate-900">Pending reschedule requests</h2>
+                    <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                        {rescheduleRequests.filter((request) => request.status === 'pending').map((request) => (
+                            <article key={request.request_id} className="rounded-xl border border-slate-200 p-4">
+                                <p className="font-semibold text-slate-800">
+                                    {request.student_first_name} {request.student_last_name} · {request.student_number}
+                                </p>
+                                <p className="mt-1 text-sm text-slate-600">
+                                    Requested {formatDate(request.requested_date)} · {request.requested_start_time}–{request.requested_end_time}
+                                </p>
+                                {request.reason && <p className="mt-2 text-sm text-slate-500">{request.reason}</p>}
+                                <div className="mt-4 flex justify-end gap-2">
+                                    {['rejected', 'approved'].map((decision) => (
+                                        <button
+                                            key={decision}
+                                            type="button"
+                                            disabled={rescheduleReviewSaving === request.request_id}
+                                            onClick={async () => {
+                                                setRescheduleReviewSaving(request.request_id);
+                                                try {
+                                                    const response = await api.put(`/admin/reschedule-requests/${request.request_id}/review`, { status: decision });
+                                                    setNotice({ type: 'success', text: response.data.message });
+                                                    await Promise.all([loadRescheduleRequests(), loadAppointments(filters), loadSchedules()]);
+                                                } catch (error) {
+                                                    setNotice({ type: 'error', text: error.response?.data?.message || 'Unable to review the reschedule request.' });
+                                                } finally {
+                                                    setRescheduleReviewSaving(null);
+                                                }
+                                            }}
+                                            className={`rounded-lg px-3 py-2 text-sm font-semibold ${decision === 'approved' ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'border border-rose-200 text-rose-700 hover:bg-rose-50'} disabled:opacity-50`}
+                                        >
+                                            {rescheduleReviewSaving === request.request_id ? 'Saving…' : decision === 'approved' ? 'Approve' : 'Reject'}
+                                        </button>
+                                    ))}
+                                </div>
+                            </article>
+                        ))}
+                    </div>
+                </section>
             )}
 
             <section className="grid gap-6 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.8fr)]">
@@ -645,6 +728,54 @@ export default function AppointmentSchedule() {
                             <button type="button" onClick={() => setShowScheduleForm(false)} className="rounded-lg px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100">Cancel</button>
                             <button type="submit" disabled={scheduleSaving || staff.length === 0} className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">
                                 <IconCalendarPlus size={17} />{scheduleSaving ? 'Saving…' : 'Save schedule'}
+                            </button>
+                        </div>
+                    </form>
+                </Modal>
+            )}
+
+            {showSettings && (
+                <Modal title="Clinic appointment settings" onClose={() => setShowSettings(false)}>
+                    <form
+                        onSubmit={async (event) => {
+                            event.preventDefault();
+                            setSettingsSaving(true);
+                            try {
+                                const response = await api.put('/admin/settings', settings);
+                                setNotice({ type: 'success', text: response.data.message });
+                                setShowSettings(false);
+                            } catch (error) {
+                                setNotice({ type: 'error', text: error.response?.data?.message || 'Unable to update clinic settings.' });
+                            } finally {
+                                setSettingsSaving(false);
+                            }
+                        }}
+                        className="space-y-4"
+                    >
+                        <div className="grid gap-3 sm:grid-cols-2">
+                            <label className="block text-sm font-medium text-slate-700">
+                                Opening time
+                                <input required type="time" value={settings.openingTime} onChange={(event) => setSettings({ ...settings, openingTime: event.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-200 px-3 py-2.5" />
+                            </label>
+                            <label className="block text-sm font-medium text-slate-700">
+                                Closing time
+                                <input required type="time" value={settings.closingTime} onChange={(event) => setSettings({ ...settings, closingTime: event.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-200 px-3 py-2.5" />
+                            </label>
+                        </div>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                            <label className="block text-sm font-medium text-slate-700">
+                                Appointment duration (minutes)
+                                <input required type="number" min="5" max="240" value={settings.appointmentDurationMinutes} onChange={(event) => setSettings({ ...settings, appointmentDurationMinutes: Number(event.target.value) })} className="mt-1.5 w-full rounded-lg border border-slate-200 px-3 py-2.5" />
+                            </label>
+                            <label className="block text-sm font-medium text-slate-700">
+                                Maximum daily appointments
+                                <input required type="number" min="1" max="500" value={settings.maxDailyAppointments} onChange={(event) => setSettings({ ...settings, maxDailyAppointments: Number(event.target.value) })} className="mt-1.5 w-full rounded-lg border border-slate-200 px-3 py-2.5" />
+                            </label>
+                        </div>
+                        <div className="flex justify-end gap-2 pt-2">
+                            <button type="button" onClick={() => setShowSettings(false)} className="rounded-lg px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100">Cancel</button>
+                            <button type="submit" disabled={settingsSaving} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50">
+                                {settingsSaving ? 'Saving…' : 'Save settings'}
                             </button>
                         </div>
                     </form>

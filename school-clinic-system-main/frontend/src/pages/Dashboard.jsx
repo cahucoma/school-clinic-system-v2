@@ -17,6 +17,18 @@ const Dashboard = () => {
     const [profilePictureFile, setProfilePictureFile] = useState(null);
     const [uploadingPic, setUploadingPic] = useState(false);
     const [profile, setProfile] = useState(null);
+    const [bookingSlot, setBookingSlot] = useState(null);
+    const [bookingReason, setBookingReason] = useState('');
+    const [bookingLoading, setBookingLoading] = useState(false);
+    const [appointmentNotice, setAppointmentNotice] = useState(null);
+    const [rescheduleAppointment, setRescheduleAppointment] = useState(null);
+    const [rescheduleSlotId, setRescheduleSlotId] = useState('');
+    const [rescheduleReason, setRescheduleReason] = useState('');
+    const [rescheduleLoading, setRescheduleLoading] = useState(false);
+    const [rescheduleRequests, setRescheduleRequests] = useState([]);
+    const [showPasswordForm, setShowPasswordForm] = useState(false);
+    const [passwordForm, setPasswordForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
+    const [passwordSaving, setPasswordSaving] = useState(false);
     const { logout, user } = useAuth();
     
     const fetchSlots = async () => {
@@ -71,6 +83,14 @@ const Dashboard = () => {
                 console.error('Failed to fetch profile:', error);
             }
         };
+        const fetchRescheduleRequests = async () => {
+            try {
+                const response = await api.get('/appointments/reschedule-requests/me');
+                setRescheduleRequests(response.data);
+            } catch (error) {
+                console.error('Failed to fetch reschedule requests:', error);
+            }
+        };
 
         fetchSlots();
         if (user?.role === 'student') {
@@ -78,6 +98,7 @@ const Dashboard = () => {
             fetchRecords();
             fetchNotifications();
             fetchProfile();
+            fetchRescheduleRequests();
             
             // Poll for notifications every 5 seconds
             const interval = setInterval(fetchNotifications, 5000);
@@ -86,18 +107,30 @@ const Dashboard = () => {
     }, [user?.role, user?.userId]);
 
     const handleBookSlot = async (slotId) => {
-        const reason = window.prompt("Please enter the reason for your visit:");
-        if (!reason) return; // User cancelled
+        setBookingSlot(slotId);
+        setBookingReason('');
+        setAppointmentNotice(null);
+    };
 
+    const submitBooking = async (event) => {
+        event.preventDefault();
+        if (!bookingReason.trim()) {
+            setAppointmentNotice({ type: 'error', text: 'Enter a reason for your visit.' });
+            return;
+        }
+        setBookingLoading(true);
         try {
             await api.post('/appointments/book', {
-                slotId,
-                reason
+                slotId: bookingSlot,
+                reason: bookingReason
             });
-            alert("Appointment booked successfully!");
+            setAppointmentNotice({ type: 'success', text: 'Appointment booked successfully.' });
+            setBookingSlot(null);
             await Promise.all([fetchSlots(), fetchAppointments()]);
         } catch (error) {
-            alert(error.response?.data?.message || "Failed to book appointment");
+            setAppointmentNotice({ type: 'error', text: error.response?.data?.message || 'Unable to book appointment.' });
+        } finally {
+            setBookingLoading(false);
         }
     };
 
@@ -105,9 +138,10 @@ const Dashboard = () => {
         if (!window.confirm('Cancel this appointment? An upcoming slot will become available to another student.')) return;
         try {
             await api.put(`/appointments/${appointmentId}/cancel`);
+            setAppointmentNotice({ type: 'success', text: 'Appointment cancelled successfully.' });
             await Promise.all([fetchSlots(), fetchAppointments()]);
         } catch (error) {
-            alert(error.response?.data?.message || 'Failed to cancel appointment');
+            setAppointmentNotice({ type: 'error', text: error.response?.data?.message || 'Failed to cancel appointment.' });
         }
     };
 
@@ -129,12 +163,34 @@ const Dashboard = () => {
 
             setProfile((current) => ({ ...current, contact_number: contactNumber }));
             setProfilePictureFile(null);
-            alert("Profile updated successfully!");
+            setAppointmentNotice({ type: 'success', text: 'Profile updated successfully.' });
             setShowSettings(false);
         } catch (error) {
             console.error("Failed to update profile:", error);
             setUploadingPic(false);
-            alert("Failed to update profile");
+            setAppointmentNotice({ type: 'error', text: error.response?.data?.message || 'Unable to update profile.' });
+        }
+    };
+
+    const handlePasswordChange = async (event) => {
+        event.preventDefault();
+        if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+            setAppointmentNotice({ type: 'error', text: 'New passwords do not match.' });
+            return;
+        }
+        setPasswordSaving(true);
+        try {
+            await api.put('/auth/change-password', {
+                currentPassword: passwordForm.currentPassword,
+                newPassword: passwordForm.newPassword,
+            });
+            setPasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
+            setShowPasswordForm(false);
+            setAppointmentNotice({ type: 'success', text: 'Password changed successfully.' });
+        } catch (error) {
+            setAppointmentNotice({ type: 'error', text: error.response?.data?.message || 'Unable to change password.' });
+        } finally {
+            setPasswordSaving(false);
         }
     };
 
@@ -233,6 +289,12 @@ const Dashboard = () => {
                 </div>
             </header>
 
+            {appointmentNotice && (
+                <div role={appointmentNotice.type === 'error' ? 'alert' : 'status'} className={`rounded-xl border px-4 py-3 text-sm ${appointmentNotice.type === 'error' ? 'border-red-200 bg-red-50 text-red-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
+                    {appointmentNotice.text}
+                </div>
+            )}
+
             <main className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                 
                 {/* Left Column - Booking Section */}
@@ -307,13 +369,26 @@ const Dashboard = () => {
                                                 'bg-slate-100 text-slate-600'
                                             }`}>{appointment.status}</span>
                                             {['pending', 'confirmed'].includes(appointment.status) && (
-                                                <button
-                                                    type="button"
-                                                    onClick={() => handleCancelAppointment(appointment.appointment_id)}
-                                                    className="text-sm font-medium text-red-600 hover:text-red-700"
-                                                >
-                                                    Cancel
-                                                </button>
+                                                <>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            setRescheduleAppointment(appointment);
+                                                            setRescheduleSlotId('');
+                                                            setRescheduleReason('');
+                                                        }}
+                                                        className="text-sm font-medium text-blue-600 hover:text-blue-700"
+                                                    >
+                                                        Reschedule
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleCancelAppointment(appointment.appointment_id)}
+                                                        className="text-sm font-medium text-red-600 hover:text-red-700"
+                                                    >
+                                                        Cancel
+                                                    </button>
+                                                </>
                                             )}
                                         </div>
                                     </div>
@@ -321,6 +396,26 @@ const Dashboard = () => {
                             </div>
                         )}
                     </div>
+                    {rescheduleRequests.length > 0 && (
+                        <div className="mt-6 border-t border-slate-100 pt-5">
+                            <h3 className="mb-3 text-sm font-semibold text-slate-800">Reschedule requests</h3>
+                            <div className="flex flex-col gap-2">
+                                {rescheduleRequests.map((request) => (
+                                    <div key={request.request_id} className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-4 py-3">
+                                        <div>
+                                            <p className="text-sm font-medium text-slate-700">
+                                                {new Date(`${request.requested_date}T00:00:00`).toLocaleDateString()} · {request.requested_start_time}
+                                            </p>
+                                            {request.reason && <p className="mt-1 text-xs text-slate-500">{request.reason}</p>}
+                                        </div>
+                                        <span className={`rounded-full px-2.5 py-1 text-xs font-semibold capitalize ${request.status === 'approved' ? 'bg-emerald-50 text-emerald-700' : request.status === 'rejected' ? 'bg-red-50 text-red-700' : 'bg-amber-50 text-amber-700'}`}>
+                                            {request.status}
+                                        </span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
                 </section>
 
                 {/* Right Column - Status/Info Section */}
@@ -366,6 +461,92 @@ const Dashboard = () => {
                 </aside>
                 
             </main>
+
+            {bookingSlot && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4">
+                    <form onSubmit={submitBooking} className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl">
+                        <h2 className="text-xl font-bold text-slate-800">Confirm appointment</h2>
+                        <p className="mt-2 text-sm text-slate-500">Explain briefly why you need to visit the clinic.</p>
+                        <label className="mt-5 block text-sm font-medium text-slate-700">
+                            Reason for visit
+                            <textarea
+                                required
+                                maxLength={2000}
+                                value={bookingReason}
+                                onChange={(event) => setBookingReason(event.target.value)}
+                                className="mt-2 h-28 w-full resize-none rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                                placeholder="Describe your concern"
+                            />
+                        </label>
+                        <div className="mt-5 flex justify-end gap-3">
+                            <button type="button" onClick={() => setBookingSlot(null)} className="rounded-xl px-4 py-2.5 font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
+                            <button type="submit" disabled={bookingLoading} className="rounded-xl bg-blue-600 px-5 py-2.5 font-semibold text-white hover:bg-blue-700 disabled:opacity-50">
+                                {bookingLoading ? 'Booking…' : 'Book appointment'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            )}
+
+            {rescheduleAppointment && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4">
+                    <form
+                        onSubmit={async (event) => {
+                            event.preventDefault();
+                            if (!rescheduleSlotId) return;
+                            setRescheduleLoading(true);
+                            try {
+                                await api.post(`/appointments/${rescheduleAppointment.appointment_id}/reschedule-request`, {
+                                    slotId: Number(rescheduleSlotId),
+                                    reason: rescheduleReason,
+                                });
+                                setAppointmentNotice({ type: 'success', text: 'Reschedule request submitted for approval.' });
+                                setRescheduleAppointment(null);
+                            } catch (error) {
+                                setAppointmentNotice({ type: 'error', text: error.response?.data?.message || 'Unable to submit reschedule request.' });
+                            } finally {
+                                setRescheduleLoading(false);
+                            }
+                        }}
+                        className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl"
+                    >
+                        <h2 className="text-xl font-bold text-slate-800">Request rescheduling</h2>
+                        <label className="mt-5 block text-sm font-medium text-slate-700">
+                            Available schedule
+                            <select
+                                required
+                                value={rescheduleSlotId}
+                                onChange={(event) => setRescheduleSlotId(event.target.value)}
+                                className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 outline-none focus:border-blue-500"
+                            >
+                                <option value="">Select a date and time</option>
+                                {slots
+                                    .filter((slot) => slot.slot_id !== rescheduleAppointment.slot_id)
+                                    .map((slot) => (
+                                        <option key={slot.slot_id} value={slot.slot_id}>
+                                            {new Date(`${slot.slot_date}T00:00:00`).toLocaleDateString()} · {slot.start_time}–{slot.end_time}
+                                        </option>
+                                    ))}
+                            </select>
+                        </label>
+                        <label className="mt-4 block text-sm font-medium text-slate-700">
+                            Reason (optional)
+                            <textarea
+                                maxLength={1000}
+                                value={rescheduleReason}
+                                onChange={(event) => setRescheduleReason(event.target.value)}
+                                className="mt-2 h-20 w-full resize-none rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500"
+                            />
+                        </label>
+                        <div className="mt-5 flex justify-end gap-3">
+                            <button type="button" onClick={() => setRescheduleAppointment(null)} className="rounded-xl px-4 py-2.5 font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
+                            <button type="submit" disabled={rescheduleLoading || !rescheduleSlotId} className="rounded-xl bg-blue-600 px-5 py-2.5 font-semibold text-white hover:bg-blue-700 disabled:opacity-50">
+                                {rescheduleLoading ? 'Submitting…' : 'Submit request'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            )}
 
             {/* Settings Modal - Enhanced Profile View */}
             {showSettings && (
@@ -419,6 +600,9 @@ const Dashboard = () => {
                                         onChange={(e) => setProfilePictureFile(e.target.files[0])}
                                     />
                                 </div>
+                                <button type="button" onClick={() => setShowPasswordForm(true)} className="text-left text-sm font-semibold text-blue-700 hover:text-blue-900">
+                                    Change password
+                                </button>
                                 <div className="flex gap-3 mt-2">
                                     <button type="button" onClick={() => setShowSettings(false)} className="flex-1 px-4 py-2 text-slate-600 font-medium hover:bg-slate-50 rounded-xl transition-colors">
                                         Cancel
@@ -431,6 +615,34 @@ const Dashboard = () => {
                         ) : (
                             <div className="py-8 flex justify-center">
                                 <p className="text-slate-500 text-sm font-medium animate-pulse">Loading profile data...</p>
+                            </div>
+                        )}
+                        {showPasswordForm && (
+                            <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 p-4">
+                                <form onSubmit={handlePasswordChange} className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl">
+                                    <h2 className="text-xl font-bold text-slate-900">Change password</h2>
+                                    <p className="mt-2 text-sm text-slate-500">Use 10–128 characters with uppercase, lowercase, and a number.</p>
+                                    <div className="mt-5 space-y-4">
+                                        <label className="block text-sm font-medium text-slate-700">
+                                            Current password
+                                            <input required type="password" autoComplete="current-password" value={passwordForm.currentPassword} onChange={(event) => setPasswordForm({ ...passwordForm, currentPassword: event.target.value })} className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5" />
+                                        </label>
+                                        <label className="block text-sm font-medium text-slate-700">
+                                            New password
+                                            <input required type="password" autoComplete="new-password" minLength={10} maxLength={128} value={passwordForm.newPassword} onChange={(event) => setPasswordForm({ ...passwordForm, newPassword: event.target.value })} className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5" />
+                                        </label>
+                                        <label className="block text-sm font-medium text-slate-700">
+                                            Confirm new password
+                                            <input required type="password" autoComplete="new-password" minLength={10} maxLength={128} value={passwordForm.confirmPassword} onChange={(event) => setPasswordForm({ ...passwordForm, confirmPassword: event.target.value })} className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5" />
+                                        </label>
+                                    </div>
+                                    <div className="mt-6 flex justify-end gap-3">
+                                        <button type="button" onClick={() => setShowPasswordForm(false)} className="rounded-xl px-4 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-100">Cancel</button>
+                                        <button type="submit" disabled={passwordSaving} className="rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50">
+                                            {passwordSaving ? 'Changing…' : 'Change password'}
+                                        </button>
+                                    </div>
+                                </form>
                             </div>
                         )}
                     </div>

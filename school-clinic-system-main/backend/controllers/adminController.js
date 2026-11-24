@@ -5,6 +5,8 @@ const {
     isValidIsoDate,
     isValidTimeRange,
     isNonEmptyText,
+    isValidStudentNumber,
+    isValidPassword,
 } = require('../utils/validation');
 
 const APPOINTMENT_STATUSES = new Set(['pending', 'confirmed', 'rejected', 'cancelled', 'completed']);
@@ -248,6 +250,24 @@ exports.createSchedule = async (req, res) => {
     try {
         connection = await pool.getConnection();
         await connection.beginTransaction();
+        const [settingsRows] = await connection.query(
+            'SELECT setting_key, setting_value FROM clinic_settings'
+        );
+        const settings = Object.fromEntries(settingsRows.map((row) => [row.setting_key, row.setting_value]));
+        const openingTime = settings.opening_time || '08:00';
+        const closingTime = settings.closing_time || '17:00';
+        const durationMinutes = Number(settings.appointment_duration_minutes || 30);
+        const toMinutes = (value) => {
+            const [hours, minutes] = String(value).slice(0, 5).split(':').map(Number);
+            return hours * 60 + minutes;
+        };
+        if (startTime < openingTime || endTime > closingTime
+            || toMinutes(endTime) - toMinutes(startTime) !== durationMinutes) {
+            await connection.rollback();
+            return res.status(409).json({
+                message: `Schedules must fit clinic hours and use the configured ${durationMinutes}-minute duration.`,
+            });
+        }
         const [staff] = await connection.query(
             'SELECT staff_id FROM staff WHERE staff_id = ? FOR UPDATE',
             [parsedStaffId]
@@ -489,6 +509,196 @@ exports.rescheduleAppointment = async (req, res) => {
     }
 };
 
+exports.getSettings = async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            'SELECT setting_key, setting_value FROM clinic_settings'
+        );
+        const settings = Object.fromEntries(rows.map((row) => [row.setting_key, row.setting_value]));
+        return res.json({
+            openingTime: settings.opening_time || '08:00',
+            closingTime: settings.closing_time || '17:00',
+            appointmentDurationMinutes: Number(settings.appointment_duration_minutes || 30),
+            maxDailyAppointments: Number(settings.max_daily_appointments || 50),
+        });
+    } catch (error) {
+        console.error('Clinic settings fetch error:', error);
+        return res.status(500).json({ message: 'Unable to fetch clinic settings.' });
+    }
+};
+
+exports.updateSettings = async (req, res) => {
+    const { openingTime, closingTime, appointmentDurationMinutes, maxDailyAppointments } = req.body || {};
+    const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+    const duration = Number(appointmentDurationMinutes);
+    const dailyLimit = Number(maxDailyAppointments);
+    if (!TIME_PATTERN.test(openingTime || '') || !TIME_PATTERN.test(closingTime || '')
+        || openingTime >= closingTime
+        || !Number.isInteger(duration) || duration < 5 || duration > 240
+        || !Number.isInteger(dailyLimit) || dailyLimit < 1 || dailyLimit > 500) {
+        return res.status(400).json({
+            message: 'Choose valid opening/closing hours, a 5–240 minute duration, and a daily limit from 1 to 500.',
+        });
+    }
+
+    const values = {
+        opening_time: openingTime,
+        closing_time: closingTime,
+        appointment_duration_minutes: String(duration),
+        max_daily_appointments: String(dailyLimit),
+    };
+    let connection;
+    try {
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
+        for (const [settingKey, settingValue] of Object.entries(values)) {
+            await connection.query(`
+                INSERT INTO clinic_settings (setting_key, setting_value, updated_by)
+                VALUES (?, ?, ?)
+                ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_by = VALUES(updated_by)
+            `, [settingKey, settingValue, req.user.userId]);
+        }
+        await connection.commit();
+        return res.json({ message: 'Clinic appointment settings updated.' });
+    } catch (error) {
+        if (connection) await connection.rollback();
+        console.error('Clinic settings update error:', error);
+        return res.status(500).json({ message: 'Unable to update clinic settings.' });
+    } finally {
+        if (connection) connection.release();
+    }
+};
+
+exports.getRescheduleRequests = async (req, res) => {
+    try {
+        const [requests] = await pool.query(`
+            SELECT rr.request_id, rr.appointment_id, rr.requested_slot_id, rr.reason,
+                   rr.status, rr.created_at, rr.reviewed_at,
+                   DATE_FORMAT(ts.slot_date, '%Y-%m-%d') AS requested_date,
+                   TIME_FORMAT(ts.start_time, '%H:%i') AS requested_start_time,
+                   TIME_FORMAT(ts.end_time, '%H:%i') AS requested_end_time,
+                   sf.first_name AS staff_first_name, sf.last_name AS staff_last_name,
+                   st.first_name AS student_first_name, st.last_name AS student_last_name,
+                   st.student_number
+            FROM reschedule_requests rr
+            JOIN appointments a ON a.appointment_id = rr.appointment_id
+            JOIN students st ON st.student_id = a.student_id
+            JOIN time_slots ts ON ts.slot_id = rr.requested_slot_id
+            JOIN staff sf ON sf.staff_id = ts.staff_id
+            ORDER BY rr.created_at DESC
+        `);
+        return res.json(requests);
+    } catch (error) {
+        console.error('Reschedule request fetch error:', error);
+        return res.status(500).json({ message: 'Unable to fetch reschedule requests.' });
+    }
+};
+
+exports.reviewRescheduleRequest = async (req, res) => {
+    const requestId = Number(req.params.id);
+    const decision = req.body?.status;
+    if (!Number.isSafeInteger(requestId) || requestId < 1
+        || !['approved', 'rejected'].includes(decision)) {
+        return res.status(400).json({ message: 'Choose a valid request and review decision.' });
+    }
+
+    let connection;
+    try {
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
+        const [requests] = await connection.query(`
+            SELECT rr.request_id, rr.appointment_id, rr.requested_slot_id, rr.status,
+                   a.status AS appointment_status, a.slot_id AS previous_slot_id,
+                   st.user_id AS student_user_id
+            FROM reschedule_requests rr
+            JOIN appointments a ON a.appointment_id = rr.appointment_id
+            JOIN students st ON st.student_id = a.student_id
+            WHERE rr.request_id = ?
+            FOR UPDATE
+        `, [requestId]);
+        if (requests.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ message: 'Reschedule request not found.' });
+        }
+        const request = requests[0];
+        if (request.status !== 'pending') {
+            await connection.rollback();
+            return res.status(409).json({ message: 'This reschedule request has already been reviewed.' });
+        }
+        if (!['pending', 'confirmed'].includes(request.appointment_status)) {
+            await connection.rollback();
+            return res.status(409).json({ message: 'The appointment is no longer active.' });
+        }
+
+        if (decision === 'approved') {
+            const [slots] = await connection.query(`
+                SELECT slot_id, is_booked,
+                       (slot_date > CURRENT_DATE() OR (slot_date = CURRENT_DATE() AND start_time > CURRENT_TIME())) AS is_future
+                FROM time_slots
+                WHERE slot_id = ?
+                FOR UPDATE
+            `, [request.requested_slot_id]);
+            const [active] = await connection.query(`
+                SELECT appointment_id FROM appointments
+                WHERE slot_id = ? AND status IN ('pending', 'confirmed')
+                LIMIT 1
+                FOR UPDATE
+            `, [request.requested_slot_id]);
+            if (slots.length === 0 || !slots[0].is_future || slots[0].is_booked || active.length > 0) {
+                await connection.rollback();
+                return res.status(409).json({ message: 'The requested schedule is no longer available.' });
+            }
+            await connection.query(
+                'UPDATE time_slots SET is_booked = TRUE WHERE slot_id = ?',
+                [request.requested_slot_id]
+            );
+            await connection.query(
+                'UPDATE appointments SET slot_id = ? WHERE appointment_id = ?',
+                [request.requested_slot_id, request.appointment_id]
+            );
+            await connection.query(`
+                UPDATE time_slots
+                SET is_booked = FALSE
+                WHERE slot_id = ? AND NOT EXISTS (
+                    SELECT 1 FROM appointments
+                    WHERE slot_id = ? AND status IN ('pending', 'confirmed')
+                )
+            `, [request.previous_slot_id, request.previous_slot_id]);
+            await connection.query(`
+                INSERT INTO appointment_history
+                    (appointment_id, action, previous_status, new_status, previous_slot_id, new_slot_id, changed_by)
+                VALUES (?, 'rescheduled', ?, ?, ?, ?, ?)
+            `, [
+                request.appointment_id,
+                request.appointment_status,
+                request.appointment_status,
+                request.previous_slot_id,
+                request.requested_slot_id,
+                req.user.userId,
+            ]);
+        }
+
+        await connection.query(
+            'UPDATE reschedule_requests SET status = ?, reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP WHERE request_id = ?',
+            [decision, req.user.userId, requestId]
+        );
+        await connection.query(
+            'INSERT INTO notifications (user_id, message) VALUES (?, ?)',
+            [request.student_user_id, decision === 'approved'
+                ? 'Your reschedule request was approved.'
+                : 'Your reschedule request was rejected.']
+        );
+        await connection.commit();
+        return res.json({ message: decision === 'approved' ? 'Reschedule request approved.' : 'Reschedule request rejected.' });
+    } catch (error) {
+        if (connection) await connection.rollback();
+        console.error('Reschedule request review error:', error);
+        return res.status(500).json({ message: 'Unable to review this reschedule request.' });
+    } finally {
+        if (connection) connection.release();
+    }
+};
+
 exports.getAppointmentHistory = async (req, res) => {
     const appointmentId = Number(req.params.id);
     if (!Number.isSafeInteger(appointmentId) || appointmentId < 1) {
@@ -514,6 +724,401 @@ exports.getAppointmentHistory = async (req, res) => {
     } catch (error) {
         console.error('Admin appointment history error:', error);
         res.status(500).json({ message: 'Unable to fetch appointment history.' });
+    }
+};
+
+exports.listStudents = async (req, res) => {
+    const page = Math.max(1, Number.parseInt(req.query.page || '1', 10) || 1);
+    const limit = Math.min(50, Math.max(1, Number.parseInt(req.query.limit || '10', 10) || 10));
+    const offset = (page - 1) * limit;
+    const search = typeof req.query.search === 'string' ? req.query.search.trim().slice(0, 100) : '';
+    const status = req.query.status || 'all';
+    const sort = ['student_number', 'first_name', 'last_name', 'created_at'].includes(req.query.sort)
+        ? req.query.sort
+        : 'created_at';
+    const order = String(req.query.order).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+    if (!['all', 'active', 'inactive'].includes(status)) {
+        return res.status(400).json({ message: 'Choose a valid account status filter.' });
+    }
+
+    const filters = ["u.role = 'student'"];
+    const params = [];
+    if (search) {
+        filters.push('(s.student_number LIKE ? OR s.first_name LIKE ? OR s.last_name LIKE ? OR u.email LIKE ?)');
+        const term = `%${search}%`;
+        params.push(term, term, term, term);
+    }
+    if (status !== 'all') {
+        filters.push('u.account_status = ?');
+        params.push(status);
+    }
+    const sortColumn = {
+        student_number: 's.student_number',
+        first_name: 's.first_name',
+        last_name: 's.last_name',
+        created_at: 'u.created_at',
+    }[sort];
+
+    try {
+        const [[countRow]] = await pool.query(`
+            SELECT COUNT(*) AS total
+            FROM students s
+            JOIN users u ON u.user_id = s.user_id
+            WHERE ${filters.join(' AND ')}
+        `, params);
+        const [rows] = await pool.query(`
+            SELECT s.student_id, s.user_id, s.student_number, s.first_name, s.last_name,
+                   s.dob, s.contact_number, u.email, u.profile_picture_url,
+                   u.account_status, u.created_at
+            FROM students s
+            JOIN users u ON u.user_id = s.user_id
+            WHERE ${filters.join(' AND ')}
+            ORDER BY ${sortColumn} ${order}
+            LIMIT ? OFFSET ?
+        `, [...params, limit, offset]);
+        const total = Number(countRow.total);
+        return res.json({
+            students: rows,
+            pagination: {
+                page,
+                limit,
+                total,
+                totalPages: Math.ceil(total / limit),
+            },
+        });
+    } catch (error) {
+        console.error('Student account list error:', error);
+        return res.status(500).json({ message: 'Unable to fetch student accounts.' });
+    }
+};
+
+exports.createStudent = async (req, res) => {
+    const { email, password, firstName, lastName, dob, studentNumber, contactNumber } = req.body || {};
+    const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+    if (!isValidEmail(normalizedEmail)
+        || !isValidPassword(password)
+        || !isNonEmptyText(firstName, 100)
+        || !isNonEmptyText(lastName, 100)
+        || !isValidIsoDate(dob)
+        || dob >= new Date().toISOString().slice(0, 10)
+        || !isValidStudentNumber(studentNumber)
+        || (contactNumber !== undefined && contactNumber !== null
+            && (typeof contactNumber !== 'string'
+                || contactNumber.trim().length < 7
+                || contactNumber.trim().length > 20
+                || !/^[0-9+(). -]+$/.test(contactNumber.trim())))) {
+        return res.status(400).json({
+            message: 'Enter valid student details, a valid student number, and a strong password.',
+        });
+    }
+
+    let connection;
+    try {
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
+        const passwordHash = await bcrypt.hash(password, 12);
+        const [existing] = await connection.query(
+            'SELECT user_id FROM users WHERE email = ? LIMIT 1',
+            [normalizedEmail]
+        );
+        if (existing.length > 0) {
+            await connection.rollback();
+            return res.status(409).json({ message: 'A user with this email already exists.' });
+        }
+        const [existingNumber] = await connection.query(
+            'SELECT student_id FROM students WHERE student_number = ? LIMIT 1',
+            [studentNumber.trim()]
+        );
+        if (existingNumber.length > 0) {
+            await connection.rollback();
+            return res.status(409).json({ message: 'This student number is already in use.' });
+        }
+        const [userResult] = await connection.query(
+            "INSERT INTO users (email, password_hash, role, account_status) VALUES (?, ?, 'student', 'active')",
+            [normalizedEmail, passwordHash]
+        );
+        await connection.query(
+            'INSERT INTO students (user_id, student_number, first_name, last_name, dob, contact_number) VALUES (?, ?, ?, ?, ?, ?)',
+            [userResult.insertId, studentNumber.trim(), firstName.trim(), lastName.trim(), dob, contactNumber?.trim() || null]
+        );
+        await connection.commit();
+        return res.status(201).json({ message: 'Student account created successfully.' });
+    } catch (error) {
+        if (connection) await connection.rollback();
+        if (error.code === 'ER_DUP_ENTRY') {
+            return res.status(409).json({ message: 'Email or student number is already in use.' });
+        }
+        console.error('Create student account error:', error);
+        return res.status(500).json({ message: 'Unable to create the student account.' });
+    } finally {
+        if (connection) connection.release();
+    }
+};
+
+exports.updateStudent = async (req, res) => {
+    const studentId = Number(req.params.id);
+    const { firstName, lastName, dob, studentNumber, contactNumber } = req.body || {};
+    if (!Number.isSafeInteger(studentId) || studentId < 1
+        || !isNonEmptyText(firstName, 100)
+        || !isNonEmptyText(lastName, 100)
+        || !isValidIsoDate(dob)
+        || dob >= new Date().toISOString().slice(0, 10)
+        || !isValidStudentNumber(studentNumber)
+        || (contactNumber !== undefined && contactNumber !== null
+            && (typeof contactNumber !== 'string'
+                || contactNumber.trim().length < 7
+                || contactNumber.trim().length > 20
+                || !/^[0-9+(). -]+$/.test(contactNumber.trim())))) {
+        return res.status(400).json({ message: 'Enter valid student profile details.' });
+    }
+
+    let connection;
+    try {
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
+        const [students] = await connection.query(
+            'SELECT student_id, user_id FROM students WHERE student_id = ? FOR UPDATE',
+            [studentId]
+        );
+        if (students.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ message: 'Student account not found.' });
+        }
+        const [duplicates] = await connection.query(
+            'SELECT student_id FROM students WHERE student_number = ? AND student_id <> ? LIMIT 1',
+            [studentNumber.trim(), studentId]
+        );
+        if (duplicates.length > 0) {
+            await connection.rollback();
+            return res.status(409).json({ message: 'This student number is already in use.' });
+        }
+        await connection.query(`
+            UPDATE students
+            SET first_name = ?, last_name = ?, dob = ?, student_number = ?, contact_number = ?
+            WHERE student_id = ?
+        `, [
+            firstName.trim(),
+            lastName.trim(),
+            dob,
+            studentNumber.trim(),
+            contactNumber?.trim() || null,
+            studentId,
+        ]);
+        await connection.commit();
+        return res.json({ message: 'Student account updated successfully.' });
+    } catch (error) {
+        if (connection) await connection.rollback();
+        if (error.code === 'ER_DUP_ENTRY') {
+            return res.status(409).json({ message: 'This student number is already in use.' });
+        }
+        console.error('Update student account error:', error);
+        return res.status(500).json({ message: 'Unable to update the student account.' });
+    } finally {
+        if (connection) connection.release();
+    }
+};
+
+exports.setStudentStatus = async (req, res) => {
+    const studentId = Number(req.params.id);
+    const status = req.body?.status;
+    if (!Number.isSafeInteger(studentId) || studentId < 1
+        || !['active', 'inactive'].includes(status)) {
+        return res.status(400).json({ message: 'Choose a valid student account status.' });
+    }
+    let connection;
+    try {
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
+        const [students] = await connection.query(
+            'SELECT user_id FROM students WHERE student_id = ? FOR UPDATE',
+            [studentId]
+        );
+        if (students.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ message: 'Student account not found.' });
+        }
+        await connection.query(
+            'UPDATE users SET account_status = ? WHERE user_id = ?',
+            [status, students[0].user_id]
+        );
+        await connection.commit();
+        return res.json({
+            message: status === 'active' ? 'Student account activated.' : 'Student account deactivated.',
+        });
+    } catch (error) {
+        if (connection) await connection.rollback();
+        console.error('Update student status error:', error);
+        return res.status(500).json({ message: 'Unable to update student account status.' });
+    } finally {
+        if (connection) connection.release();
+    }
+};
+
+exports.listAccounts = async (req, res) => {
+    const page = Math.max(1, Number.parseInt(req.query.page || '1', 10) || 1);
+    const limit = Math.min(50, Math.max(1, Number.parseInt(req.query.limit || '10', 10) || 10));
+    const offset = (page - 1) * limit;
+    const search = typeof req.query.search === 'string' ? req.query.search.trim().slice(0, 100) : '';
+    const role = req.query.role || 'all';
+    const status = req.query.status || 'all';
+    const sort = ['email', 'role', 'created_at'].includes(req.query.sort) ? req.query.sort : 'created_at';
+    const order = String(req.query.order).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+    if (!['all', 'student', 'staff', 'admin'].includes(role)
+        || !['all', 'active', 'inactive'].includes(status)) {
+        return res.status(400).json({ message: 'Choose valid account filters.' });
+    }
+    const filters = [];
+    const params = [];
+    if (search) {
+        filters.push('u.email LIKE ?');
+        params.push(`%${search}%`);
+    }
+    if (role !== 'all') {
+        filters.push('u.role = ?');
+        params.push(role);
+    }
+    if (status !== 'all') {
+        filters.push('u.account_status = ?');
+        params.push(status);
+    }
+    const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+    const sortColumn = { email: 'u.email', role: 'u.role', created_at: 'u.created_at' }[sort];
+    try {
+        const [[countRow]] = await pool.query(
+            `SELECT COUNT(*) AS total FROM users u ${where}`,
+            params
+        );
+        const [rows] = await pool.query(`
+            SELECT u.user_id, u.email, u.role, u.account_status, u.password_changed_at, u.created_at,
+                   CASE
+                       WHEN u.role = 'student' THEN s.first_name
+                       WHEN u.role = 'staff' THEN sf.first_name
+                       ELSE NULL
+                   END AS first_name,
+                   CASE
+                       WHEN u.role = 'student' THEN s.last_name
+                       WHEN u.role = 'staff' THEN sf.last_name
+                       ELSE NULL
+                   END AS last_name
+            FROM users u
+            LEFT JOIN students s ON s.user_id = u.user_id
+            LEFT JOIN staff sf ON sf.user_id = u.user_id
+            ${where}
+            ORDER BY ${sortColumn} ${order}
+            LIMIT ? OFFSET ?
+        `, [...params, limit, offset]);
+        const total = Number(countRow.total);
+        return res.json({
+            accounts: rows,
+            pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+        });
+    } catch (error) {
+        console.error('Account list error:', error);
+        return res.status(500).json({ message: 'Unable to fetch accounts.' });
+    }
+};
+
+exports.setAccountStatus = async (req, res) => {
+    const userId = Number(req.params.id);
+    const status = req.body?.status;
+    if (!Number.isSafeInteger(userId) || userId < 1
+        || !['active', 'inactive'].includes(status)) {
+        return res.status(400).json({ message: 'Choose a valid account status.' });
+    }
+    if (userId === req.user.userId && status === 'inactive') {
+        return res.status(400).json({ message: 'You cannot deactivate your own account.' });
+    }
+    try {
+        const [users] = await pool.query(
+            'SELECT role FROM users WHERE user_id = ? LIMIT 1',
+            [userId]
+        );
+        if (users.length === 0) {
+            return res.status(404).json({ message: 'Account not found.' });
+        }
+        if (users[0].role === 'admin' && status === 'inactive') {
+            const [[adminCount]] = await pool.query(
+                "SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND account_status = 'active'"
+            );
+            if (Number(adminCount.count) <= 1) {
+                return res.status(409).json({ message: 'At least one active administrator must remain.' });
+            }
+        }
+        await pool.query(
+            'UPDATE users SET account_status = ? WHERE user_id = ?',
+            [status, userId]
+        );
+        return res.json({ message: status === 'active' ? 'Account activated.' : 'Account deactivated.' });
+    } catch (error) {
+        console.error('Account status error:', error);
+        return res.status(500).json({ message: 'Unable to update account status.' });
+    }
+};
+
+exports.updateAccountRole = async (req, res) => {
+    const userId = Number(req.params.id);
+    const role = req.body?.role;
+    if (!Number.isSafeInteger(userId) || userId < 1
+        || !['student', 'staff', 'admin'].includes(role)) {
+        return res.status(400).json({ message: 'Choose a valid account role.' });
+    }
+    if (userId === req.user.userId) {
+        return res.status(400).json({ message: 'You cannot change your own role.' });
+    }
+    let connection;
+    try {
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
+        const [users] = await connection.query(
+            'SELECT role, account_status FROM users WHERE user_id = ? FOR UPDATE',
+            [userId]
+        );
+        if (users.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ message: 'Account not found.' });
+        }
+        if (users[0].role === 'admin' && role !== 'admin') {
+            const [[adminCount]] = await connection.query(
+                "SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND account_status = 'active'"
+            );
+            if (Number(adminCount.count) <= 1) {
+                await connection.rollback();
+                return res.status(409).json({ message: 'At least one active administrator must remain.' });
+            }
+        }
+        if (users[0].role === 'student' && role !== 'student') {
+            await connection.rollback();
+            return res.status(409).json({
+                message: 'Student accounts cannot change roles while a student profile exists. Deactivate the account instead.',
+            });
+        }
+        if (users[0].role !== 'student' && role === 'student') {
+            await connection.rollback();
+            return res.status(409).json({
+                message: 'Use student account creation to add a student profile; a role change alone cannot create one.',
+            });
+        }
+        if (users[0].role === 'admin' && role === 'staff') {
+            const [staffProfiles] = await connection.query(
+                'SELECT staff_id FROM staff WHERE user_id = ? LIMIT 1',
+                [userId]
+            );
+            if (staffProfiles.length === 0) {
+                await connection.rollback();
+                return res.status(409).json({
+                    message: 'Create a clinic staff profile before changing this account to staff.',
+                });
+            }
+        }
+        await connection.query('UPDATE users SET role = ? WHERE user_id = ?', [role, userId]);
+        await connection.commit();
+        return res.json({ message: 'Account role updated successfully.' });
+    } catch (error) {
+        if (connection) await connection.rollback();
+        console.error('Account role update error:', error);
+        return res.status(500).json({ message: 'Unable to update account role.' });
+    } finally {
+        if (connection) connection.release();
     }
 };
 

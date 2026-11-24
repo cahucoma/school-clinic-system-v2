@@ -20,7 +20,10 @@ exports.createRecord = async (req, res) => {
 
         try {
             const [appointments] = await connection.query(`
-                SELECT a.appointment_id, a.status
+                SELECT a.appointment_id, a.status,
+                       a.slot_id,
+                       DATE_FORMAT(t.slot_date, '%Y-%m-%d') AS slot_date,
+                       TIME_FORMAT(t.end_time, '%H:%i:%s') AS end_time
                 FROM appointments a
                 JOIN time_slots t ON a.slot_id = t.slot_id
                 JOIN staff s ON t.staff_id = s.staff_id
@@ -31,9 +34,17 @@ exports.createRecord = async (req, res) => {
                 await connection.rollback();
                 return res.status(404).json({ message: 'Appointment not found for this staff member.' });
             }
-            if (!['pending', 'confirmed'].includes(appointments[0].status)) {
+            if (appointments[0].status !== 'confirmed') {
                 await connection.rollback();
-                return res.status(409).json({ message: 'This appointment cannot be completed.' });
+                return res.status(409).json({ message: 'Only confirmed appointments can be completed.' });
+            }
+            const [timeState] = await connection.query(
+                `SELECT (? < CURRENT_DATE() OR (? = CURRENT_DATE() AND ? <= CURRENT_TIME())) AS has_passed`,
+                [appointments[0].slot_date, appointments[0].slot_date, appointments[0].end_time]
+            );
+            if (!timeState[0].has_passed) {
+                await connection.rollback();
+                return res.status(409).json({ message: 'The appointment can only be completed after its scheduled end time.' });
             }
 
             await connection.query(
@@ -42,12 +53,32 @@ exports.createRecord = async (req, res) => {
             );
             
             const [updateResult] = await connection.query(
-                'UPDATE appointments SET status = ? WHERE appointment_id = ? AND status IN (?, ?)',
-                ['completed', parsedAppointmentId, 'pending', 'confirmed']
+                'UPDATE appointments SET status = ? WHERE appointment_id = ? AND status = ?',
+                ['completed', parsedAppointmentId, 'confirmed']
             );
             if (updateResult.affectedRows !== 1) {
                 await connection.rollback();
                 return res.status(409).json({ message: 'This appointment cannot be completed.' });
+            }
+
+            await connection.query(`
+                INSERT INTO appointment_history
+                    (appointment_id, action, previous_status, new_status, previous_slot_id, new_slot_id, changed_by)
+                VALUES (?, 'status_changed', 'confirmed', 'completed', ?, ?, ?)
+            `, [parsedAppointmentId, appointments[0].slot_id, appointments[0].slot_id, req.user.userId]);
+
+            const [studentUser] = await connection.query(`
+                SELECT st.user_id
+                FROM appointments a
+                JOIN students st ON st.student_id = a.student_id
+                WHERE a.appointment_id = ?
+                LIMIT 1
+            `, [parsedAppointmentId]);
+            if (studentUser.length > 0) {
+                await connection.query(
+                    'INSERT INTO notifications (user_id, message) VALUES (?, ?)',
+                    [studentUser[0].user_id, 'Your clinic visit has been completed and a medical record was created.']
+                );
             }
 
             await connection.commit();

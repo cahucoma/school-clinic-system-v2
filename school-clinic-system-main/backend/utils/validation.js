@@ -33,10 +33,27 @@ function isNonEmptyText(value, maxLength) {
         && value.trim().length <= maxLength;
 }
 
+function isValidStudentNumber(value) {
+    return typeof value === 'string'
+        && value.trim().length >= 3
+        && /^[A-Za-z0-9][A-Za-z0-9-]{2,49}$/.test(value.trim());
+}
+
+function isValidPassword(value) {
+    return typeof value === 'string'
+        && value.length >= 10
+        && value.length <= 128
+        && /[A-Z]/.test(value)
+        && /[a-z]/.test(value)
+        && /\d/.test(value);
+}
+
 module.exports = {
     isValidEmail,
     isValidIsoDate,
     isValidTime,
     isValidTimeRange,
     isNonEmptyText,
+    isValidStudentNumber,
+    isValidPassword,
 };

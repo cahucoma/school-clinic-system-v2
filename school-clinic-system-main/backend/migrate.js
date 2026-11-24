@@ -40,6 +40,41 @@ async function migrate() {
             )
         `);
 
+        const [studentDuplicates] = await pool.query(`
+            SELECT user_id
+            FROM students
+            GROUP BY user_id
+            HAVING COUNT(*) > 1
+            LIMIT 1
+        `);
+        if (studentDuplicates.length === 0) {
+            const [studentIndexes] = await pool.query('SHOW INDEX FROM students');
+            if (!studentIndexes.some((index) => index.Column_name === 'user_id' && Number(index.Non_unique) === 0)) {
+                await pool.query('CREATE UNIQUE INDEX uq_students_user_id ON students (user_id)');
+            }
+        }
+
+        const [staffDuplicates] = await pool.query(`
+            SELECT user_id
+            FROM staff
+            GROUP BY user_id
+            HAVING COUNT(*) > 1
+            LIMIT 1
+        `);
+        if (staffDuplicates.length === 0) {
+            const [staffIndexes] = await pool.query('SHOW INDEX FROM staff');
+            if (!staffIndexes.some((index) => index.Column_name === 'user_id' && Number(index.Non_unique) === 0)) {
+                await pool.query('CREATE UNIQUE INDEX uq_staff_user_id ON staff (user_id)');
+            }
+        }
+
+        const [notificationIndexes] = await pool.query('SHOW INDEX FROM notifications');
+        if (!notificationIndexes.some((index) => index.Key_name === 'idx_notifications_user_read')) {
+            await pool.query(
+                'CREATE INDEX idx_notifications_user_read ON notifications (user_id, is_read, created_at)'
+            );
+        }
+
         const [indexes] = await pool.query('SHOW INDEX FROM appointments');
         const hasNonUniqueSlotIndex = indexes.some((index) =>
             index.Column_name === 'slot_id' && Number(index.Non_unique) === 1
@@ -66,6 +101,61 @@ async function migrate() {
                 NULL DEFAULT 'pending'
             `);
         }
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS clinic_settings (
+                setting_key VARCHAR(50) PRIMARY KEY,
+                setting_value VARCHAR(100) NOT NULL,
+                updated_by INT DEFAULT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (updated_by) REFERENCES users(user_id) ON DELETE SET NULL
+            )
+        `);
+        await pool.query(`
+            INSERT IGNORE INTO clinic_settings (setting_key, setting_value) VALUES
+                ('opening_time', '08:00'),
+                ('closing_time', '17:00'),
+                ('appointment_duration_minutes', '30'),
+                ('max_daily_appointments', '50')
+        `);
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS reschedule_requests (
+                request_id INT AUTO_INCREMENT PRIMARY KEY,
+                appointment_id INT NOT NULL,
+                requested_slot_id INT NOT NULL,
+                reason TEXT,
+                status ENUM('pending', 'approved', 'rejected') NOT NULL DEFAULT 'pending',
+                requested_by INT NOT NULL,
+                reviewed_by INT DEFAULT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                reviewed_at TIMESTAMP NULL DEFAULT NULL,
+                FOREIGN KEY (appointment_id) REFERENCES appointments(appointment_id) ON DELETE CASCADE,
+                FOREIGN KEY (requested_slot_id) REFERENCES time_slots(slot_id) ON DELETE RESTRICT,
+                FOREIGN KEY (requested_by) REFERENCES users(user_id) ON DELETE RESTRICT,
+                FOREIGN KEY (reviewed_by) REFERENCES users(user_id) ON DELETE SET NULL,
+                INDEX idx_reschedule_requests_status (status, created_at)
+            )
+        `);
+
+        const [userColumns] = await pool.query("SHOW COLUMNS FROM users");
+        if (!userColumns.some((column) => column.Field === 'account_status')) {
+            await pool.query(
+                "ALTER TABLE users ADD COLUMN account_status ENUM('active', 'inactive') NOT NULL DEFAULT 'active' AFTER profile_picture_url"
+            );
+        }
+        if (!userColumns.some((column) => column.Field === 'password_changed_at')) {
+            await pool.query(
+                'ALTER TABLE users ADD COLUMN password_changed_at TIMESTAMP NULL DEFAULT NULL AFTER account_status'
+            );
+        }
+        await pool.query(
+            'CREATE INDEX IF NOT EXISTS idx_users_role_status ON users (role, account_status)'
+        ).catch(async () => {
+            const [indexes] = await pool.query('SHOW INDEX FROM users');
+            if (!indexes.some((index) => index.Key_name === 'idx_users_role_status')) {
+                await pool.query('CREATE INDEX idx_users_role_status ON users (role, account_status)');
+            }
+        });
 
         console.log('Database migration completed. Existing appointment records were preserved.');
         await pool.end();

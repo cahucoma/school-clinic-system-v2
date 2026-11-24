@@ -12,5 +12,16 @@ router.put('/appointments/:id/status', verifyToken, verifyRole(['admin']), admin
 router.put('/appointments/:id/reschedule', verifyToken, verifyRole(['admin']), adminController.rescheduleAppointment);
 router.get('/schedules', verifyToken, verifyRole(['admin']), adminController.getSchedules);
 router.post('/schedules', verifyToken, verifyRole(['admin']), adminController.createSchedule);
+router.get('/settings', verifyToken, verifyRole(['admin']), adminController.getSettings);
+router.put('/settings', verifyToken, verifyRole(['admin']), adminController.updateSettings);
+router.get('/reschedule-requests', verifyToken, verifyRole(['admin']), adminController.getRescheduleRequests);
+router.put('/reschedule-requests/:id/review', verifyToken, verifyRole(['admin']), adminController.reviewRescheduleRequest);
+router.get('/students', verifyToken, verifyRole(['admin']), adminController.listStudents);
+router.post('/students', verifyToken, verifyRole(['admin']), adminController.createStudent);
+router.put('/students/:id', verifyToken, verifyRole(['admin']), adminController.updateStudent);
+router.put('/students/:id/status', verifyToken, verifyRole(['admin']), adminController.setStudentStatus);
+router.get('/accounts', verifyToken, verifyRole(['admin']), adminController.listAccounts);
+router.put('/accounts/:id/status', verifyToken, verifyRole(['admin']), adminController.setAccountStatus);
+router.put('/accounts/:id/role', verifyToken, verifyRole(['admin']), adminController.updateAccountRole);
 
 module.exports = router;

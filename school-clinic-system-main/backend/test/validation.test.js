@@ -6,6 +6,8 @@ const {
     isValidTime,
     isValidTimeRange,
     isNonEmptyText,
+    isValidStudentNumber,
+    isValidPassword,
 } = require('../utils/validation');
 
 test('email validation trims whitespace and enforces a valid address shape', () => {
@@ -37,4 +39,21 @@ test('text validation rejects blank and oversized input', () => {
     assert.equal(isNonEmptyText('  reason  ', 10), true);
     assert.equal(isNonEmptyText('   ', 10), false);
     assert.equal(isNonEmptyText('too long', 3), false);
+});
+
+test('student numbers only accept readable alphanumeric identifiers', () => {
+    assert.equal(isValidStudentNumber('2026-00123'), true);
+    assert.equal(isValidStudentNumber('ABC123'), true);
+    assert.equal(isValidStudentNumber('  2026-00123  '), true);
+    assert.equal(isValidStudentNumber('12'), false);
+    assert.equal(isValidStudentNumber('2026 00123'), false);
+    assert.equal(isValidStudentNumber('x'.repeat(51)), false);
+});
+
+test('passwords require length and character complexity', () => {
+    assert.equal(isValidPassword('Clinic12345'), true);
+    assert.equal(isValidPassword('clinic12345'), false);
+    assert.equal(isValidPassword('CLINIC12345'), false);
+    assert.equal(isValidPassword('ClinicTest'), false);
+    assert.equal(isValidPassword('Short1A'), false);
 });

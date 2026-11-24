@@ -8,17 +8,27 @@ const Login = () => {
     const [password, setPassword] = useState('');
     const [showPassword, setShowPassword] = useState(false);
     const [error, setError] = useState('');
+    const [submitting, setSubmitting] = useState(false);
     const { login } = useAuth();
     const navigate = useNavigate();
 
     const handleSubmit = async (e) => {
         e.preventDefault();
         setError('');
+        setSubmitting(true);
         try {
-            await login(email, password);
-            navigate('/dashboard');
+            const result = await login(email, password);
+            if (result.role === 'admin') {
+                navigate('/admin-dashboard', { replace: true });
+            } else if (result.role === 'staff') {
+                navigate('/staff-dashboard', { replace: true });
+            } else {
+                navigate('/dashboard', { replace: true });
+            }
         } catch (err) {
             setError(err.response?.data?.message || 'Failed to login');
+        } finally {
+            setSubmitting(false);
         }
     };
 
@@ -67,8 +77,8 @@ const Login = () => {
                             </button>
                         </div>
                     </div>
-                    <button type="submit" className="mt-2 w-full bg-blue-600 text-white py-2.5 rounded-xl font-semibold hover:bg-blue-700 transition-colors shadow-sm">
-                        Sign In
+                    <button type="submit" disabled={submitting} className="mt-2 w-full bg-blue-600 text-white py-2.5 rounded-xl font-semibold hover:bg-blue-700 transition-colors shadow-sm disabled:opacity-60">
+                        {submitting ? 'Signing in...' : 'Sign In'}
                     </button>
                 </form>
 

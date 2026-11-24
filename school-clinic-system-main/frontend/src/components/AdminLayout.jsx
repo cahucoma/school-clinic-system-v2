@@ -1,10 +1,11 @@
 import { NavLink } from 'react-router-dom';
-import { IconCalendarEvent, IconHome2, IconLogout } from '@tabler/icons-react';
+import { IconCalendarEvent, IconHome2, IconLogout, IconUsers } from '@tabler/icons-react';
 import { useAuth } from '../context/auth';
 
 const links = [
     { to: '/admin-dashboard', label: 'Dashboard', icon: IconHome2, end: true },
     { to: '/admin/appointments', label: 'Appointment Schedule', icon: IconCalendarEvent },
+    { to: '/admin/accounts', label: 'User Management', icon: IconUsers },
 ];
 
 function NavigationLinks() {

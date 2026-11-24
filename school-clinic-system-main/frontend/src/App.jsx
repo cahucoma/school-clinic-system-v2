@@ -9,6 +9,7 @@ const Dashboard = lazy(() => import('./pages/Dashboard'));
 const StaffDashboard = lazy(() => import('./pages/StaffDashboard'));
 const AdminDashboard = lazy(() => import('./pages/AdminDashboard'));
 const AppointmentSchedule = lazy(() => import('./pages/AppointmentSchedule'));
+const AccountManagement = lazy(() => import('./pages/AccountManagement'));
 const AdminLayout = lazy(() => import('./components/AdminLayout'));
 const Login = lazy(() => import('./pages/Login'));
 const Register = lazy(() => import('./pages/Register'));
@@ -66,6 +67,15 @@ function App() {
                   </ProtectedRoute>
                 }
               />
+              <Route
+                path="/admin/accounts"
+                element={
+                  <ProtectedRoute allowedRoles={['admin']}>
+                    <AdminLayout><AccountManagement /></AdminLayout>
+                  </ProtectedRoute>
+                }
+              />
+              <Route path="*" element={<Navigate to="/dashboard" replace />} />
             </Routes>
           </Suspense>
         </Router>

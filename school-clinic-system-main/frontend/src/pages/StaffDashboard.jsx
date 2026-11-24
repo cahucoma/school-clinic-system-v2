@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { IconCalendarEvent, IconClock, IconUser, IconStethoscope, IconLogout, IconCheck, IconCalendarPlus, IconX, IconWand } from '@tabler/icons-react';
+import { IconCalendarEvent, IconClock, IconUser, IconStethoscope, IconLogout, IconCheck, IconCalendarPlus, IconX, IconWand, IconBell } from '@tabler/icons-react';
 import api from '../utils/api';
 import { useAuth } from '../context/auth';
 
 const StaffDashboard = () => {
     const [appointments, setAppointments] = useState([]);
     const [openSlots, setOpenSlots] = useState([]);
+    const [notifications, setNotifications] = useState([]);
+    const [showNotifications, setShowNotifications] = useState(false);
     const [selectedApt, setSelectedApt] = useState(null);
     
     // Add Slot Form State
@@ -38,11 +40,13 @@ const StaffDashboard = () => {
     const loadData = async () => {
         try {
             const [aptRes, slotRes] = await Promise.all([
-                api.post('/appointments/staff-appointments'),
-                api.post('/appointments/staff-slots')
+                api.get('/appointments/staff-appointments'),
+                api.get('/appointments/staff-slots')
             ]);
             setAppointments(aptRes.data);
             setOpenSlots(slotRes.data);
+            const notificationResponse = await api.get('/notifications/me');
+            setNotifications(notificationResponse.data);
         } catch (error) {
             console.error("Failed to fetch dashboard data:", error);
         }
@@ -118,6 +122,45 @@ const StaffDashboard = () => {
                 <div className="flex items-center gap-4 bg-white px-4 py-2 rounded-full shadow-sm border border-slate-100 w-full sm:w-auto justify-center sm:justify-start">
                     <IconUser size={20} className="text-slate-400" />
                     <span className="text-sm font-semibold text-slate-700">Staff Portal</span>
+                    <div className="relative">
+                        <button
+                            type="button"
+                            onClick={() => setShowNotifications((current) => !current)}
+                            className="relative p-2 text-slate-400 hover:text-blue-500 hover:bg-blue-50 rounded-full"
+                            aria-label="Notifications"
+                        >
+                            <IconBell size={20} />
+                            {notifications.some((notification) => !notification.is_read) && (
+                                <span className="absolute right-1 top-1 h-2.5 w-2.5 rounded-full bg-red-500 ring-2 ring-white" />
+                            )}
+                        </button>
+                        {showNotifications && (
+                            <div className="absolute right-0 top-full z-50 mt-2 w-80 rounded-2xl border border-slate-100 bg-white shadow-xl">
+                                <div className="border-b border-slate-100 p-4 font-semibold text-slate-800">Notifications</div>
+                                <div className="max-h-80 overflow-y-auto">
+                                    {notifications.length === 0 ? (
+                                        <p className="p-6 text-center text-sm text-slate-500">No notifications</p>
+                                    ) : notifications.map((notification) => (
+                                        <button
+                                            type="button"
+                                            key={notification.notification_id}
+                                            onClick={async () => {
+                                                await api.put(`/notifications/${notification.notification_id}/read`);
+                                                setNotifications((current) => current.map((item) =>
+                                                    item.notification_id === notification.notification_id
+                                                        ? { ...item, is_read: true }
+                                                        : item
+                                                ));
+                                            }}
+                                            className={`block w-full border-b border-slate-50 p-4 text-left text-sm ${notification.is_read ? 'text-slate-500' : 'bg-blue-50/50 text-slate-800'}`}
+                                        >
+                                            {notification.message}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </div>
                     <button 
                         onClick={logout}
                         className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors"
@@ -183,7 +226,7 @@ const StaffDashboard = () => {
                                             </td>
                                             <td className="py-4">
                                                 <div className="flex items-center gap-2">
-                                                    {['pending', 'confirmed'].includes(apt.status) && (
+                                                    {apt.status === 'confirmed' && (
                                                         <button 
                                                             onClick={() => setSelectedApt(apt)}
                                                             className="flex items-center gap-1 text-sm bg-green-50 text-green-600 px-3 py-1.5 rounded-lg hover:bg-green-100 transition-colors"
